@@ -513,7 +513,7 @@
                     if (error) console.error('fetchUserRole SELECT error:', error.message);
                     if (data) {
                         // حماية مدير النظام الأساسي — يظل admin دايماً حتى لو تغيّر في DB
-                        if (userEmail === OWNER_EMAIL && data.role !== 'admin') {
+                        if (userEmail === OWNER_EMAIL && (data.role !== 'admin' || !data.is_approved)) {
                             await supabase.from('user_roles').update({ role: 'admin', is_approved: true }).eq('id', userId);
                             data.role = 'admin';
                             data.is_approved = true;
