@@ -9,7 +9,7 @@ const supabase = createClient(
 );
 
 async function shopifyGraphQL(store, accessToken, query, variables = {}) {
-  const url = `https://${store}/admin/api/2025-01/graphql.json`;
+  const url = `https://${store}/admin/api/2026-01/graphql.json`;
   const res = await fetch(url, {
     method: 'POST',
     headers: {
