@@ -3,13 +3,13 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>ASIA</title>
+    <title>CRM-ASIA-Ukiyo</title>
     
     <!-- إعدادات تطبيق الويب التقدمي (PWA) للأندرويد والآيفون -->
     <meta name="theme-color" content="#0f172a">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <meta name="apple-mobile-web-app-title" content="ASIA">
+    <meta name="apple-mobile-web-app-title" content="CRM-ASIA-Ukiyo">
     <link rel="apple-touch-icon" href="https://placehold.co/192x192/0f172a/14b8a6?text=CRM">
     <link rel="manifest" href="/manifest.json">
     <script>
@@ -468,10 +468,10 @@
             const [resetPwModal, setResetPwModal] = useState({ open: false, email: '', userName: '' });
             const [publicUserNames, setPublicUserNames] = useState({});
 
-            const pages = ['ASIA'];
+            const pages = ['ASIA', 'Ukiyo'];
             const orderStatuses = ['جاري التحضير', 'تم', 'الشحن', 'مراجعة', 'استبدال', 'مرتجع', 'الغاء', 'تاجيل', 'اعادة ارسال', 'خارجي'];
             
-            const EXPENSE_CATEGORIES = ['إعلانات ASIA', 'مرتبات', 'سلف', 'مستلزمات', 'انتقالات', 'موديل وبلوجر', 'اشتراكات', 'صيانة', 'اكراميات', 'مرافق', 'ايجار', 'مرتجعات', 'تعاملات قانونية', 'مصاريف شحن', 'حساب شخصي', 'أخرى'];
+            const EXPENSE_CATEGORIES = ['إعلانات ASIA', 'إعلانات Ukiyo', 'مرتبات', 'سلف', 'مستلزمات', 'انتقالات', 'موديل وبلوجر', 'اشتراكات', 'صيانة', 'اكراميات', 'مرافق', 'ايجار', 'مرتجعات', 'تعاملات قانونية', 'مصاريف شحن', 'حساب شخصي', 'أخرى'];
             const INCOME_CATEGORIES = ['شحن عايده', 'شحن اوفر', 'شحن مكتب', 'أخرى'];
             const DEPARTMENTS = ['أونلاين'];
 
@@ -1503,7 +1503,7 @@
             const printSelectedOrders = () => {
                 if (selectedOrders.length === 0) return;
                 const toPrint = filteredOrders.filter(o => selectedOrders.includes(o.id));
-                const pageColors = {'ASIA':'#0ea5e9'};
+                const pageColors = {'ASIA':'#0ea5e9', 'Ukiyo':'#f97316'};
                 const rows = toPrint.map((o, idx) => {
                     const total = (Number(o.productPrice)||0) + (Number(o.shippingPrice)||0);
                     const pageColor = pageColors[o.page] || '#0284c7';
@@ -2139,8 +2139,8 @@
                                 <div className="w-20 h-20 rounded-3xl flex items-center justify-center mx-auto mb-4 shadow-2xl" style={{background: 'linear-gradient(135deg, #0284c7 0%, #38bdf8 100%)', boxShadow: '0 20px 60px rgba(2,132,199,0.4)'}}>
                                     <IconPackage size={40} />
                                 </div>
-                                <h1 className="text-3xl font-black text-white tracking-tight">ASIA</h1>
-                                <p className="text-sky-400 font-bold text-sm mt-1 tracking-widest uppercase">ASIA</p>
+                                <h1 className="text-3xl font-black text-white tracking-tight">CRM-ASIA-Ukiyo</h1>
+                                <p className="text-sky-400 font-bold text-sm mt-1 tracking-widest uppercase">CRM-ASIA-Ukiyo</p>
                             </div>
 
                             {/* Card */}
@@ -2324,7 +2324,7 @@
                         <div className="flex items-center justify-between px-5 py-4 border-b border-slate-700/50" style={{background: 'linear-gradient(135deg, #0c1a2e 0%, #0f2643 100%)'}}>
                             <div className="flex items-center gap-3">
                                 <div className="w-9 h-9 rounded-xl flex items-center justify-center" style={{background: 'rgba(14,165,233,0.2)'}}><IconPackage size={20} /></div>
-                                <div><div className="font-black text-sm text-white leading-tight">ASIA</div><div className="text-[10px] text-sky-400 font-bold">ASIA</div></div>
+                                <div><div className="font-black text-sm text-white leading-tight">CRM-ASIA-Ukiyo</div><div className="text-[10px] text-sky-400 font-bold">CRM-ASIA-Ukiyo</div></div>
                             </div>
                             <button className="md:hidden text-slate-400 hover:text-white p-1.5 rounded-lg hover:bg-white/10 transition-colors" onClick={() => setIsSidebarOpen(false)}><IconX size={18}/></button>
                         </div>
@@ -2366,7 +2366,7 @@
                                 <button onClick={handleInstallClick} className="sidebar-nav-item text-green-400 hover:text-green-300 w-full"><IconDownload size={18} /> <span>تثبيت التطبيق 📱</span></button>
                             </div>
                             <div className="pt-3 pb-1 text-center">
-                                <span className="text-[10px] text-slate-600 font-bold tracking-widest">v5.48</span>
+                                <span className="text-[10px] text-slate-600 font-bold tracking-widest">v5.49</span>
                             </div>
                         </nav>
                     </aside>
