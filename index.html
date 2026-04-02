@@ -386,6 +386,7 @@
             const [products, setProducts] = useState([]);
             const ordersRef = useRef([]);
             const [usersList, setUsersList] = useState([]);
+            const [pendingSelections, setPendingSelections] = useState({});
             const [realStats, setRealStats] = useState({ total: null, processing: null, delivered: null, revenue: null });
             const [pageDbStats, setPageDbStats] = useState([]);
             const [appNotifs, setAppNotifs] = useState([]);
@@ -645,7 +646,10 @@
             const fetchUsersList = async () => {
                 try {
                     const { data, error } = await supabase.from('user_roles').select('*');
-                    if (!error && data) setUsersList(data);
+                    if (!error && data) {
+                        const unique = data.filter((v, i, a) => a.findIndex(x => x.id === v.id) === i);
+                        setUsersList(unique);
+                    }
                 } catch (error) { notify('تعذر تحميل قائمة المستخدمين.'); }
             };
 
@@ -886,14 +890,17 @@
                 };
                 initSession();
 
-                const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-                    if (mounted) {
+                const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+                    if (!mounted) return;
+                    if (event === 'SIGNED_OUT') {
+                        setUser(null); setUserRole(null); setOrders([]); setAuthLoading(false);
+                    } else if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED') {
                         if (session?.user) {
                             setUser(session.user);
                             fetchUserRole(session.user.id, session.user.email);
-                        } else {
-                            setUser(null); setUserRole(null); setOrders([]); setAuthLoading(false);
                         }
+                    } else if (event === 'INITIAL_SESSION') {
+                        if (!session?.user) setAuthLoading(false);
                     }
                 });
                 return () => { mounted = false; subscription?.unsubscribe(); };
@@ -2366,7 +2373,7 @@
                                 <button onClick={handleInstallClick} className="sidebar-nav-item text-green-400 hover:text-green-300 w-full"><IconDownload size={18} /> <span>تثبيت التطبيق 📱</span></button>
                             </div>
                             <div className="pt-3 pb-1 text-center">
-                                <span className="text-[10px] text-slate-600 font-bold tracking-widest">v5.50</span>
+                                <span className="text-[10px] text-slate-600 font-bold tracking-widest">v5.51</span>
                             </div>
                         </nav>
                     </aside>
@@ -3257,8 +3264,9 @@
                                                 </div>
                                                 <div className="bg-amber-50/50 p-4 space-y-3">
                                                     {pendingList.map(u => {
-                                                        const [pendingRole, setPendingRole] = React.useState('agent');
-                                                        const [pendingPages, setPendingPages] = React.useState([]);
+                                                        const sel = pendingSelections[u.id] || { role: 'agent', pages: [] };
+                                                        const setRole = (val) => setPendingSelections(prev => ({...prev, [u.id]: {...(prev[u.id]||{role:'agent',pages:[]}), role: val}}));
+                                                        const togglePage = (p) => setPendingSelections(prev => { const cur = (prev[u.id]?.pages||[]); const next = cur.includes(p) ? cur.filter(x=>x!==p) : [...cur,p]; return {...prev, [u.id]: {...(prev[u.id]||{role:'agent'}), pages: next}}; });
                                                         return (
                                                         <div key={u.id} className="bg-white rounded-xl border border-amber-200 p-4 flex flex-col gap-3 shadow-sm hover:shadow-md transition-shadow">
                                                             <div className="flex items-center gap-3">
@@ -3271,7 +3279,7 @@
                                                             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                                                                 <div>
                                                                     <label className="text-[10px] font-black text-slate-500 block mb-1">الوظيفة</label>
-                                                                    <select value={pendingRole} onChange={e => setPendingRole(e.target.value)} className="w-full border border-slate-200 px-2 py-1.5 rounded-lg text-[11px] font-bold outline-none focus:ring-2 focus:ring-sky-500 bg-white">
+                                                                    <select value={sel.role} onChange={e => setRole(e.target.value)} className="w-full border border-slate-200 px-2 py-1.5 rounded-lg text-[11px] font-bold outline-none focus:ring-2 focus:ring-sky-500 bg-white">
                                                                         {Object.entries(ROLE_NAMES).map(([val, label]) => {
                                                                             if ((val === 'admin' || val === 'owner') && userRole?.role !== 'admin') return null;
                                                                             return <option key={val} value={val}>{label}</option>;
@@ -3282,10 +3290,10 @@
                                                                     <label className="text-[10px] font-black text-slate-500 block mb-1">الصفحات</label>
                                                                     <div className="flex flex-wrap gap-1">
                                                                         {pages.map(p => {
-                                                                            const checked = pendingPages.includes(p);
+                                                                            const checked = sel.pages.includes(p);
                                                                             return (
                                                                                 <label key={p} className={`flex items-center gap-1 px-2 py-1 rounded-lg border text-[10px] font-bold cursor-pointer transition-all ${checked ? 'bg-sky-100 border-sky-400 text-sky-800' : 'bg-white border-slate-200 text-slate-500 hover:bg-slate-50'}`}>
-                                                                                    <input type="checkbox" className="w-3 h-3" checked={checked} onChange={() => setPendingPages(prev => checked ? prev.filter(x => x !== p) : [...prev, p])} /> {p}
+                                                                                    <input type="checkbox" className="w-3 h-3" checked={checked} onChange={() => togglePage(p)} /> {p}
                                                                                 </label>
                                                                             );
                                                                         })}
@@ -3294,9 +3302,10 @@
                                                             </div>
                                                             <div className="flex gap-2 justify-end">
                                                                 <button onClick={async () => {
-                                                                    const updateData = { is_approved: true, role: pendingRole };
-                                                                    if (!SUPER_ADMIN_ROLES.includes(pendingRole)) updateData.assigned_page = pendingPages.join(',');
+                                                                    const updateData = { is_approved: true, role: sel.role };
+                                                                    if (!SUPER_ADMIN_ROLES.includes(sel.role)) updateData.assigned_page = sel.pages.join(',');
                                                                     await supabase.from('user_roles').update(updateData).eq('id', u.id);
+                                                                    setPendingSelections(prev => { const n = {...prev}; delete n[u.id]; return n; });
                                                                     fetchUsersList();
                                                                     notify(`تم تفعيل حساب ${u.name} بنجاح`, 'success');
                                                                 }} className="bg-green-600 hover:bg-green-700 text-white font-black text-xs px-5 py-2.5 rounded-xl transition-all shadow-md hover:shadow-lg flex items-center gap-1.5">
