@@ -2366,7 +2366,7 @@
                                 <button onClick={handleInstallClick} className="sidebar-nav-item text-green-400 hover:text-green-300 w-full"><IconDownload size={18} /> <span>تثبيت التطبيق 📱</span></button>
                             </div>
                             <div className="pt-3 pb-1 text-center">
-                                <span className="text-[10px] text-slate-600 font-bold tracking-widest">v5.47</span>
+                                <span className="text-[10px] text-slate-600 font-bold tracking-widest">v5.48</span>
                             </div>
                         </nav>
                     </aside>
@@ -2452,8 +2452,9 @@
                                                         <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5 md:gap-2">
                                                             {orderStatuses.map(status => {
                                                                 const count = pageOrders.filter(o => o.status === status).length;
+                                                                if (count === 0) return null;
                                                                 return (
-                                                                    <button key={status} onClick={() => navigateToFilteredOrders(page, status)} className={`flex justify-between items-center px-2 md:px-3 py-1.5 md:py-2 rounded-xl border text-[10px] md:text-xs font-bold transition-transform hover:scale-105 ${getRowStatusColor(status)} ${count === 0 ? 'opacity-40' : ''}`}>
+                                                                    <button key={status} onClick={() => navigateToFilteredOrders(page, status)} className={`flex justify-between items-center px-2 md:px-3 py-1.5 md:py-2 rounded-xl border text-[10px] md:text-xs font-bold transition-transform hover:scale-105 ${getRowStatusColor(status)}`}>
                                                                         <span className="truncate ml-1">{status}</span><span className="bg-white/90 px-1.5 py-0.5 rounded shadow-sm text-slate-800">{count}</span>
                                                                     </button>
                                                                 );
