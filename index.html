@@ -877,16 +877,31 @@
 
             useEffect(() => {
                 let mounted = true;
+
+                // getSession بيجيب الـ session من localStorage عند الـ refresh
+                const initSession = async () => {
+                    try {
+                        const { data: { session } } = await supabase.auth.getSession();
+                        if (!mounted) return;
+                        if (session?.user) {
+                            setUser(session.user);
+                            await fetchUserRole(session.user.id, session.user.email);
+                        } else {
+                            setAuthLoading(false);
+                        }
+                    } catch (err) { if (mounted) setAuthLoading(false); }
+                };
+                initSession();
+
                 const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
                     if (!mounted) return;
                     if (event === 'SIGNED_OUT') {
                         setUser(null); setUserRole(null); setOrders([]); setAuthLoading(false);
-                    } else if (session?.user) {
+                    } else if (event === 'SIGNED_IN' && session?.user) {
                         setUser(session.user);
                         fetchUserRole(session.user.id, session.user.email);
-                    } else if (event === 'INITIAL_SESSION' && !session) {
-                        setAuthLoading(false);
                     }
+                    // TOKEN_REFRESHED / INITIAL_SESSION / USER_UPDATED → initSession handles them
                 });
                 return () => { mounted = false; subscription?.unsubscribe(); };
             }, []);
@@ -2358,7 +2373,7 @@
                                 <button onClick={handleInstallClick} className="sidebar-nav-item text-green-400 hover:text-green-300 w-full"><IconDownload size={18} /> <span>تثبيت التطبيق 📱</span></button>
                             </div>
                             <div className="pt-3 pb-1 text-center">
-                                <span className="text-[10px] text-slate-600 font-bold tracking-widest">v5.52</span>
+                                <span className="text-[10px] text-slate-600 font-bold tracking-widest">v5.53</span>
                             </div>
                         </nav>
                     </aside>
