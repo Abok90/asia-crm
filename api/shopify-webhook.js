@@ -61,7 +61,7 @@ export default async function handler(req, res) {
       customer: customerName,
       phone,
       address,
-      page: 'اسيا',
+      page: 'ASIA',
       item: items,
       quantity: (payload.line_items || []).reduce((s, i) => s + (i.quantity || 1), 0),
       status: 'جاري التحضير',
