@@ -76,6 +76,13 @@ export default async function handler(req, res) {
     }], { onConflict: 'id' });
 
     if (error) { console.error('create error:', error); return res.status(500).json({ error: error.message }); }
+
+    await supabase.from('activity_logs').insert([{
+      user_name: 'Shopify',
+      action: `تم استلام أوردر جديد من Shopify: ${orderId} - ${customerName}`,
+      order_id: orderId,
+    }]);
+
     return res.status(200).json({ success: true, topic });
   }
 
@@ -88,31 +95,53 @@ export default async function handler(req, res) {
       .eq('shopify_order_id', String(payload.id));
 
     if (error) { console.error('cancel error:', error); return res.status(500).json({ error: error.message }); }
+
+    await supabase.from('activity_logs').insert([{
+      user_name: 'Shopify',
+      action: `تم إلغاء أوردر Shopify: ${orderId}`,
+      order_id: orderId,
+    }]);
+
     return res.status(200).json({ success: true, topic });
   }
 
   // ==================== orders/fulfilled ====================
   if (topic === 'orders/fulfilled') {
+    const orderId = `SH-${payload.order_number || payload.id}`;
     const { error } = await supabase
       .from('orders')
       .update({ status: 'الشحن' })
       .eq('shopify_order_id', String(payload.id));
 
     if (error) { console.error('fulfill error:', error); return res.status(500).json({ error: error.message }); }
+
+    await supabase.from('activity_logs').insert([{
+      user_name: 'Shopify',
+      action: `تم شحن أوردر Shopify: ${orderId}`,
+      order_id: orderId,
+    }]);
+
     return res.status(200).json({ success: true, topic });
   }
 
   // ==================== orders/edited ====================
   if (topic === 'orders/edited') {
     // تحديث الملاحظات لو اتغيرت
-    const orderId = payload.order_edit?.order_id;
-    if (orderId) {
+    const shopifyOrderId = payload.order_edit?.order_id;
+    if (shopifyOrderId) {
+      const orderId = `SH-${shopifyOrderId}`;
       const { error } = await supabase
         .from('orders')
         .update({ notes: payload.order_edit?.note || '' })
-        .eq('shopify_order_id', String(orderId));
+        .eq('shopify_order_id', String(shopifyOrderId));
 
       if (error) { console.error('edit error:', error); return res.status(500).json({ error: error.message }); }
+
+      await supabase.from('activity_logs').insert([{
+        user_name: 'Shopify',
+        action: `تم تعديل أوردر Shopify: ${orderId}`,
+        order_id: orderId,
+      }]);
     }
     return res.status(200).json({ success: true, topic });
   }
