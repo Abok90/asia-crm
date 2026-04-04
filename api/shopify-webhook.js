@@ -146,6 +146,48 @@ export default async function handler(req, res) {
     return res.status(200).json({ success: true, topic });
   }
 
+  // ==================== orders/updated ====================
+  if (topic === 'orders/updated') {
+    const orderId = `SH-${payload.order_number || payload.id}`;
+    const shopifyOrderId = String(payload.id);
+
+    // Determine desired status from Shopify state
+    let newStatus = null;
+    if (payload.cancelled_at) {
+      newStatus = 'الغاء';
+    } else if (payload.fulfillment_status === 'fulfilled') {
+      newStatus = 'الشحن';
+    } else if (!payload.fulfillment_status) {
+      // Unfulfilled / reopened order
+      newStatus = 'جاري التحضير';
+    }
+
+    if (newStatus) {
+      // Fetch current status to avoid overwriting unrelated CRM changes
+      const { data: existing } = await supabase
+        .from('orders')
+        .select('status')
+        .eq('shopify_order_id', shopifyOrderId)
+        .single();
+
+      if (existing && existing.status !== newStatus) {
+        const { error } = await supabase
+          .from('orders')
+          .update({ status: newStatus })
+          .eq('shopify_order_id', shopifyOrderId);
+
+        if (error) { console.error('update error:', error); return res.status(500).json({ error: error.message }); }
+
+        await supabase.from('activity_logs').insert([{
+          user_name: 'Shopify',
+          action: `تحديث حالة أوردر Shopify: ${orderId} → ${newStatus}`,
+          order_id: orderId,
+        }]);
+      }
+    }
+    return res.status(200).json({ success: true, topic });
+  }
+
   return res.status(200).json({ success: true, topic: 'ignored' });
 }
 

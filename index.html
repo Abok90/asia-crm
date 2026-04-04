@@ -797,14 +797,15 @@
                 await Promise.all([fetchOrdersData(), fetchProducts()]);
                 setLoadingDB(false);
                 // باقي البيانات في الخلفية بعد ما الصفحة تظهر
-                fetchRealStats();
-                fetchPageDbStats();
-                fetchPublicUserNames();
-                fetchAdminUserIds();
-                fetchMonthlyEmployeeStats();
-                if (isSuperAdmin || isPageManager) fetchUsersList();
-                if (isSuperAdmin || isPageManager) fetchActivityLogs();
-                if (canAccessFinance) fetchFinanceRecords();
+                Promise.allSettled([
+                    fetchRealStats(),
+                    fetchPageDbStats(),
+                    fetchPublicUserNames(),
+                    fetchAdminUserIds(),
+                    fetchMonthlyEmployeeStats(),
+                    ...(isSuperAdmin || isPageManager ? [fetchUsersList(), fetchActivityLogs()] : []),
+                    ...(canAccessFinance ? [fetchFinanceRecords()] : []),
+                ]);
             };
 
             const searchDatabase = async (searchText) => {
@@ -1857,7 +1858,12 @@
                             if (origId !== newId) {
                                 const r1 = await supabase.from('orders').insert([p]);
                                 if (r1.error) throw r1.error;
-                                await supabase.from('orders').delete().eq('id', origId);
+                                const r1d = await supabase.from('orders').delete().eq('id', origId);
+                                if (r1d.error) {
+                                    // Rollback: remove the duplicate we just inserted
+                                    await supabase.from('orders').delete().eq('id', newId);
+                                    throw r1d.error;
+                                }
                             } else {
                                 const up = { ...p }; delete up.id;
                                 const r2 = await supabase.from('orders').update(up).eq('id', newId);
@@ -1942,7 +1948,10 @@
                     // Shopify sync: لو الأوردر جاي من Shopify نحدث Shopify كمان
                     if (orderToUpdate.shopify_order_id && orderToUpdate.shopify_store) {
                         const shopifyActionMap = { 'الشحن': 'fulfill', 'الغاء': 'cancel', 'تم': 'complete' };
-                        const shopifyAction = shopifyActionMap[newStatus];
+                        // لو كان الأوردر في الشحن وبيرجع لحالة تانية → نلغي الـ fulfillment
+                        const shopifyAction = orderToUpdate.status === 'الشحن' && newStatus !== 'الشحن'
+                            ? 'unfulfill'
+                            : shopifyActionMap[newStatus];
                         if (shopifyAction) {
                             const { data: { session: sess } } = await supabase.auth.getSession();
                             const authToken = sess?.access_token || '';
@@ -1950,7 +1959,7 @@
                                 method: 'POST',
                                 headers: { 'Content-Type': 'application/json', 'x-crm-auth': authToken },
                                 body: JSON.stringify({ action: shopifyAction, shopifyOrderId: orderToUpdate.shopify_order_id, shopifyStore: orderToUpdate.shopify_store })
-                            }).catch(() => {}); // fire-and-forget
+                            }).catch(err => { console.error('Shopify sync failed:', err); notify('تم تحديث الحالة محلياً لكن فشل المزامنة مع Shopify', 'warning'); });
                         }
                     }
                 } catch (error) { notify("خطأ في التحديث: " + error.message); setOrders(previousOrders); }
@@ -1974,6 +1983,22 @@
                      setViewOrder(updatedOrder);
                      setOrders(prev => prev.map(o => o.id === viewOrder.id ? updatedOrder : o));
                      syncToGoogleSheet('upsert', updatedOrder);
+                     // Shopify sync
+                     if (viewOrder.shopify_order_id && viewOrder.shopify_store && quickStatus !== viewOrder.status) {
+                         const shopifyActionMap = { 'الشحن': 'fulfill', 'الغاء': 'cancel', 'تم': 'complete' };
+                         const shopifyAction = viewOrder.status === 'الشحن' && quickStatus !== 'الشحن'
+                             ? 'unfulfill'
+                             : shopifyActionMap[quickStatus];
+                         if (shopifyAction) {
+                             const { data: { session: sess } } = await supabase.auth.getSession();
+                             const authToken = sess?.access_token || '';
+                             fetch('/api/shopify-action', {
+                                 method: 'POST',
+                                 headers: { 'Content-Type': 'application/json', 'x-crm-auth': authToken },
+                                 body: JSON.stringify({ action: shopifyAction, shopifyOrderId: viewOrder.shopify_order_id, shopifyStore: viewOrder.shopify_store })
+                             }).catch(err => { console.error('Shopify sync failed:', err); notify('تم الحفظ محلياً لكن فشل المزامنة مع Shopify', 'warning'); });
+                         }
+                     }
                      notify("تم الحفظ بنجاح!", 'success');
                  } catch (error) { notify("فشل الحفظ: " + error.message); } finally { setIsQuickUpdating(false); }
             };
@@ -2373,7 +2398,7 @@
                                 <button onClick={handleInstallClick} className="sidebar-nav-item text-green-400 hover:text-green-300 w-full"><IconDownload size={18} /> <span>تثبيت التطبيق 📱</span></button>
                             </div>
                             <div className="pt-3 pb-1 text-center">
-                                <span className="text-[10px] text-slate-600 font-bold tracking-widest">v5.54</span>
+                                <span className="text-[10px] text-slate-600 font-bold tracking-widest">v5.55</span>
                             </div>
                         </nav>
                     </aside>

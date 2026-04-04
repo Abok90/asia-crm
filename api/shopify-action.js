@@ -18,6 +18,10 @@ async function shopifyGraphQL(store, accessToken, query, variables = {}) {
     },
     body: JSON.stringify({ query, variables }),
   });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Shopify API error ${res.status}: ${text.substring(0, 200)}`);
+  }
   return res.json();
 }
 
@@ -122,6 +126,58 @@ export default async function handler(req, res) {
         restock: true,
       });
       const errors = result?.data?.orderCancel?.orderCancelUserErrors;
+      if (errors?.length) return res.status(400).json({ error: errors });
+      return res.status(200).json({ success: true });
+    }
+
+    if (action === 'unfulfill') {
+      // جلب آخر fulfillment ناجح وإلغاؤه
+      const fulfillmentsQuery = `
+        query getFulfillments($id: ID!) {
+          order(id: $id) {
+            fulfillments(first: 10) {
+              id
+              status
+            }
+          }
+        }
+      `;
+      const fResult = await shopifyGraphQL(shopifyStore, accessToken, fulfillmentsQuery, { id: orderGID });
+      const fulfillments = fResult?.data?.order?.fulfillments || [];
+      const successFulfillment = fulfillments.find(f => f.status === 'SUCCESS');
+
+      if (!successFulfillment) {
+        return res.status(200).json({ success: true, note: 'No fulfilled shipment to cancel' });
+      }
+
+      const cancelMutation = `
+        mutation fulfillmentCancel($id: ID!) {
+          fulfillmentCancel(id: $id) {
+            fulfillment { id status }
+            userErrors { field message }
+          }
+        }
+      `;
+      const cancelResult = await shopifyGraphQL(shopifyStore, accessToken, cancelMutation, { id: successFulfillment.id });
+      const cancelErrors = cancelResult?.data?.fulfillmentCancel?.userErrors;
+      if (cancelErrors?.length) return res.status(400).json({ error: cancelErrors });
+      return res.status(200).json({ success: true });
+    }
+
+    if (action === 'complete') {
+      // إغلاق الأوردر على Shopify
+      const mutation = `
+        mutation orderClose($input: OrderCloseInput!) {
+          orderClose(input: $input) {
+            order { id }
+            userErrors { field message }
+          }
+        }
+      `;
+      const result = await shopifyGraphQL(shopifyStore, accessToken, mutation, {
+        input: { id: orderGID },
+      });
+      const errors = result?.data?.orderClose?.userErrors;
       if (errors?.length) return res.status(400).json({ error: errors });
       return res.status(200).json({ success: true });
     }
