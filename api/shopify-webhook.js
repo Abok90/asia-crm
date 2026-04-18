@@ -25,10 +25,16 @@ export default async function handler(req, res) {
   const hmac = req.headers['x-shopify-hmac-sha256'];
   const shopDomain = req.headers['x-shopify-shop-domain'];
   const topic = req.headers['x-shopify-topic']; // orders/create, orders/cancelled, orders/edited, orders/fulfilled
-  const secret = process.env.SHOPIFY_WEBHOOK_SECRET;
+  
+  // تحديد الصفحة القادمة من رابط شوبيفاي، الافتراضي هو ASIA
+  const targetPage = req.query.page || 'ASIA';
+  
+  // تحديد الـ Secret الخاص بالصفحة (يبحث عن SHOPIFY_WEBHOOK_SECRET_UKIYO مثلاً)
+  const secretKeyName = `SHOPIFY_WEBHOOK_SECRET_${targetPage.toUpperCase()}`;
+  const secret = process.env[secretKeyName] || process.env.SHOPIFY_WEBHOOK_SECRET;
 
   if (secret && !verifyShopifyWebhook(rawBody, hmac, secret)) {
-    return res.status(401).json({ error: 'Unauthorized' });
+    return res.status(401).json({ error: 'Unauthorized', details: 'Invalid HMAC signature' });
   }
 
   let payload;
@@ -61,7 +67,7 @@ export default async function handler(req, res) {
       customer: customerName,
       phone,
       address,
-      page: 'ASIA',
+      page: targetPage,
       item: items,
       quantity: (payload.line_items || []).reduce((s, i) => s + (i.quantity || 1), 0),
       status: 'جاري التحضير',
