@@ -566,37 +566,53 @@
                 } catch (e) { notify('تعذر تحميل المنتجات. تحقق من الاتصال وأعد المحاولة.'); }
             };
 
-            const DISPLAY_LIMIT = 500; // عدد الأوردرات الأقصى المحملة في الذاكرة — البحث يشمل كل قاعدة البيانات
-            const HISTORY_DAYS = 90; // النافذة الزمنية الافتراضية بالأيام
+            const DISPLAY_LIMIT = 100; // تم تقليل سحب البيانات إلى 100 فقط للسرعة الصاروخية
+            const HISTORY_DAYS = 90; // الأيام المرجعية للعرض الأولي
 
             const fetchRealStats = async () => {
                 try {
-                    const processingStatuses = ['جاري التحضير','مراجعة','تاجيل','الشحن','استبدال','اعادة ارسال'];
-                    const [totalRes, processingRes, deliveredRes] = await Promise.all([
-                        supabase.from('orders').select('*', { count: 'exact', head: true }),
-                        supabase.from('orders').select('*', { count: 'exact', head: true }).in('status', processingStatuses),
-                        supabase.from('orders').select('productPrice,shippingPrice', { count: 'exact' }).eq('status', 'تم')
-                    ]);
-                    const revenue = (deliveredRes.data || []).reduce((s, o) => s + (Number(o.productPrice) || 0) + (Number(o.shippingPrice) || 0), 0);
+                    // الاتصال بوظيفة Supabase المبرمجة بالـ SQL بحيث يقوم السيرفر بجمع الأرباح وإرجاع المجموع النهائي
+                    const { data, error } = await supabase.rpc('get_real_stats');
+                    if (error || !data || data.length === 0) throw error || new Error('No data from RPC');
                     setRealStats({
-                        total:      totalRes.count      ?? null,
-                        processing: processingRes.count ?? null,
-                        delivered:  deliveredRes.count  ?? null,
-                        revenue
+                        total: data[0].total_orders || 0,
+                        processing: data[0].processing_orders || 0,
+                        delivered: data[0].delivered_orders || 0,
+                        revenue: data[0].total_revenue || 0
                     });
-                } catch(e) { console.error('fetchRealStats error', e); }
+                } catch(e) { 
+                    console.warn('Real stats RPC failed (SQL not added yet), falling back to fast counters...', e);
+                    // في حال لم يقم العميل بإضافة الـ SQL بعد، يتم الحساب المبدئي السريع والسليم بدون إطالة 
+                    const processingStatuses = ['جاري التحضير','مراجعة','تاجيل','الشحن','استبدال','اعادة ارسال'];
+                    const [totalRes, processingRes] = await Promise.all([
+                        supabase.from('orders').select('id', { count: 'exact', head: true }),
+                        supabase.from('orders').select('id', { count: 'exact', head: true }).in('status', processingStatuses),
+                    ]);
+                    setRealStats({
+                        total: totalRes.count ?? null,
+                        processing: processingRes.count ?? null,
+                        delivered: null, // يتطلب SQL للسرعة
+                        revenue: null    // يتطلب SQL للسرعة
+                    });
+                }
             };
 
-            // جلب page+status+date+prices لكل الاوردرات — بدون حد 500 — لإحصائيات دقيقة
+            // تحليل البيانات للمخططات: استدعاء الإحصائيات لآخر 6 شهور فقط بحد أقصى 5000 اوردر لمنع تجميد المتصفح
             const fetchPageDbStats = async () => {
                 if (!user) return;
                 try {
+                    const memoryLimit = new Date();
+                    memoryLimit.setDate(memoryLimit.getDate() - 180); // 180 يوم
+                    const memoryLimitIso = memoryLimit.toISOString();
+
                     let all = [];
                     const batchSize = 1000;
                     let from = 0;
-                    while (true) {
+                    while (from < 5000) { // سقف أمان 5000 لحماية متصفح المستخدمين
                         const { data } = await supabase.from('orders')
                             .select('page,status,date,created_at,productPrice,shippingPrice')
+                            .gte('created_at', memoryLimitIso)
+                            .order('created_at', { ascending: false })
                             .range(from, from + batchSize - 1);
                         if (!data || data.length === 0) break;
                         all = all.concat(data.map(o => ({ ...o, date: normalizeDate(o.date) || (o.created_at ? o.created_at.split('T')[0] : '') })));
@@ -797,13 +813,18 @@
                 await Promise.all([fetchOrdersData(), fetchProducts()]);
                 setLoadingDB(false);
                 // باقي البيانات في الخلفية بعد ما الصفحة تظهر
-                fetchRealStats();
-                fetchPageDbStats();
+                // تأخير تحميل الإحصائيات (Lazy Loading) لضمان سرعة فتح النظام بلمح البصر للموظفين
+                setTimeout(() => {
+                    fetchRealStats();
+                    fetchPageDbStats();
+                    fetchMonthlyEmployeeStats();
+                    if (isSuperAdmin || isPageManager) fetchActivityLogs();
+                }, 1500);
+
+                // الدوال الأساسية والمهمة فوراً 
                 fetchPublicUserNames();
                 fetchAdminUserIds();
-                fetchMonthlyEmployeeStats();
                 if (isSuperAdmin || isPageManager) fetchUsersList();
-                if (isSuperAdmin || isPageManager) fetchActivityLogs();
                 if (canAccessFinance) fetchFinanceRecords();
             };
 
