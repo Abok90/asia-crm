@@ -440,7 +440,7 @@
             const [logsPerPage, setLogsPerPage] = useState(50);
             const [logCurrentPage, setLogCurrentPage] = useState(1);
 
-            const [ordersPerPage, setOrdersPerPage] = useState(100);
+            const [ordersPerPage, setOrdersPerPage] = useState(50);
             const [currentPage, setCurrentPage] = useState(1);
             const [csvHeaders, setCsvHeaders] = useState([]);
             const [csvData, setCsvData] = useState([]);
@@ -566,7 +566,7 @@
                 } catch (e) { notify('تعذر تحميل المنتجات. تحقق من الاتصال وأعد المحاولة.'); }
             };
 
-            const DISPLAY_LIMIT = 100; // تم تقليل سحب البيانات إلى 100 فقط للسرعة الصاروخية
+            const DISPLAY_LIMIT = 500; // تم تعديل الحد الأقصى إلى 500 लتمكين فحص المكررات وعرض البيانات على صفحات 50/50
             const HISTORY_DAYS = 90; // الأيام المرجعية للعرض الأولي
 
             const fetchRealStats = async () => {
@@ -645,8 +645,12 @@
             const fetchOrdersData = useCallback(async () => {
                 if (!user) return;
                 try {
-                    let query = supabase.from('orders').select('*').order('created_at', { ascending: false }).limit(DISPLAY_LIMIT);
-                    if (filterStatus && filterStatus !== 'الكل') query = query.eq('status', filterStatus);
+                    let query = supabase.from('orders').select('*').order('created_at', { ascending: false });
+                    if (filterStatus && filterStatus !== 'الكل') {
+                        query = query.eq('status', filterStatus);
+                    } else {
+                        query = query.limit(DISPLAY_LIMIT);
+                    }
                     if (filterPage && filterPage !== 'الكل') query = query.eq('page', filterPage);
                     if (!loadAllHistory) {
                         const since = new Date();
