@@ -646,6 +646,8 @@
                 if (!user) return;
                 try {
                     let query = supabase.from('orders').select('*').order('created_at', { ascending: false }).limit(DISPLAY_LIMIT);
+                    if (filterStatus && filterStatus !== 'الكل') query = query.eq('status', filterStatus);
+                    if (filterPage && filterPage !== 'الكل') query = query.eq('page', filterPage);
                     if (!loadAllHistory) {
                         const since = new Date();
                         since.setDate(since.getDate() - HISTORY_DAYS);
@@ -657,7 +659,7 @@
                     setOrders(safeOrders);
                     ordersRef.current = safeOrders;
                 } catch (error) { notify('تعذر تحميل الأوردرات. تحقق من الاتصال وأعد المحاولة.'); }
-            }, [user, loadAllHistory]);
+            }, [user, loadAllHistory, filterStatus, filterPage]);
 
             const fetchUsersList = async () => {
                 try {
@@ -1006,6 +1008,7 @@
 
             useEffect(() => { setCurrentPage(1); }, [searchQuery, filterStatus, filterPage, dateFrom, dateTo, showDuplicatesOnly]);
             useEffect(() => { setSelectedOrders([]); }, [filterStatus, filterPage, searchQuery, dateFrom, dateTo]);
+            useEffect(() => { if (user) fetchOrdersData(); }, [filterStatus, filterPage]);
             useEffect(() => {
                 const delayDebounceFn = setTimeout(() => { if (searchQuery.length > 2) searchDatabase(searchQuery); else setSearchResults([]); }, 800); 
                 return () => clearTimeout(delayDebounceFn);
