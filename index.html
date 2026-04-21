@@ -383,6 +383,7 @@
             const [selectedPageStatus, setSelectedPageStatus] = useState({});
             
             const [orders, setOrders] = useState([]);
+            const [totalOrdersCount, setTotalOrdersCount] = useState(0);
             const [products, setProducts] = useState([]);
             const ordersRef = useRef([]);
             const overridesRef = useRef({});
@@ -641,25 +642,34 @@
             const fetchOrdersData = useCallback(async () => {
                 if (!user) return;
                 try {
-                    let query = supabase.from('orders').select('*').order('created_at', { ascending: false }).order('id', { ascending: false });
-                    if (filterStatus && filterStatus !== 'الكل') {
-                        query = query.eq('status', filterStatus);
-                    } else {
-                        query = query.limit(100);
-                    }
+                    let query = supabase.from('orders').select('*', { count: 'exact' }).order('created_at', { ascending: false }).order('id', { ascending: false });
+                    if (filterStatus && filterStatus !== 'الكل') query = query.eq('status', filterStatus);
                     if (filterPage && filterPage !== 'الكل') query = query.eq('page', filterPage);
-                    if (!loadAllHistory) {
+                    if (dateFrom) query = query.gte('date', dateFrom);
+                    if (dateTo) query = query.lte('date', dateTo);
+                    
+                    if (!loadAllHistory && !dateFrom && !dateTo) {
                         const since = new Date();
                         since.setDate(since.getDate() - HISTORY_DAYS);
                         query = query.gte('created_at', since.toISOString());
                     }
-                    const { data, error } = await query;
+
+                    if (ordersPerPage !== 'All') {
+                        const start = (currentPage - 1) * ordersPerPage;
+                        query = query.range(start, start + ordersPerPage - 1);
+                    } else {
+                        query = query.limit(2000);
+                    }
+
+                    const { data, count, error } = await query;
                     if (error) throw error;
                     const safeOrders = (data || []).map(o => ({ ...o, productPrice: Number(o.productPrice) || 0, shippingPrice: Number(o.shippingPrice) || 0, date: normalizeDate(o.date) || (o.created_at ? o.created_at.split('T')[0] : '') }));
+                    
+                    setTotalOrdersCount(count || 0);
                     setOrders(safeOrders);
                     ordersRef.current = safeOrders;
                 } catch (error) { notify('تعذر تحميل الأوردرات. تحقق من الاتصال وأعد المحاولة.'); }
-            }, [user, loadAllHistory, filterStatus, filterPage]);
+            }, [user, loadAllHistory, filterStatus, filterPage, dateFrom, dateTo, currentPage, ordersPerPage]);
 
             const fetchUsersList = async () => {
                 try {
@@ -1018,7 +1028,7 @@
 
             useEffect(() => { setCurrentPage(1); }, [searchQuery, filterStatus, filterPage, dateFrom, dateTo, showDuplicatesOnly]);
             useEffect(() => { setSelectedOrders([]); }, [filterStatus, filterPage, searchQuery, dateFrom, dateTo]);
-            useEffect(() => { if (user) fetchOrdersData(); }, [filterStatus, filterPage]);
+            useEffect(() => { if (user) fetchOrdersData(); }, [fetchOrdersData]);
             useEffect(() => {
                 const delayDebounceFn = setTimeout(() => { if (searchQuery.length > 2) searchDatabase(searchQuery); else setSearchResults([]); }, 800); 
                 return () => clearTimeout(delayDebounceFn);
@@ -1112,11 +1122,18 @@
 
             const displayedOrders = useMemo(() => {
                 if (ordersPerPage === 'All') return filteredOrders;
-                const start = (currentPage - 1) * ordersPerPage;
-                return filteredOrders.slice(start, start + ordersPerPage);
-            }, [filteredOrders, currentPage, ordersPerPage]);
+                if (searchResults.length > 0) {
+                    const start = (currentPage - 1) * ordersPerPage;
+                    return filteredOrders.slice(start, start + ordersPerPage);
+                }
+                return filteredOrders;
+            }, [filteredOrders, currentPage, ordersPerPage, searchResults.length]);
 
-            const totalPages = ordersPerPage === 'All' ? 1 : Math.ceil(filteredOrders.length / ordersPerPage);
+            const totalPages = useMemo(() => {
+                if (ordersPerPage === 'All') return 1;
+                if (searchResults.length > 0) return Math.ceil(filteredOrders.length / ordersPerPage);
+                return Math.ceil(totalOrdersCount / ordersPerPage);
+            }, [filteredOrders.length, searchResults.length, ordersPerPage, totalOrdersCount]);
 
             const statsFilteredOrders = useMemo(() => filteredOrders.filter(order => {
                 const d = order.date || '';
@@ -2414,7 +2431,7 @@
                                 <button onClick={handleInstallClick} className="sidebar-nav-item text-green-400 hover:text-green-300 w-full"><IconDownload size={18} /> <span>تثبيت التطبيق 📱</span></button>
                             </div>
                             <div className="pt-3 pb-1 text-center">
-                                <span className="text-[10px] text-slate-600 font-bold tracking-widest">v5.56</span>
+                                <span className="text-[10px] text-slate-600 font-bold tracking-widest">v5.57</span>
                             </div>
                         </nav>
                     </aside>
