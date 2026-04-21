@@ -385,6 +385,7 @@
             const [orders, setOrders] = useState([]);
             const [products, setProducts] = useState([]);
             const ordersRef = useRef([]);
+            const overridesRef = useRef({});
             const [usersList, setUsersList] = useState([]);
             const [pendingSelections, setPendingSelections] = useState({});
             const [realStats, setRealStats] = useState({ total: null, processing: null, delivered: null, revenue: null });
@@ -645,11 +646,11 @@
             const fetchOrdersData = useCallback(async () => {
                 if (!user) return;
                 try {
-                    let query = supabase.from('orders').select('*').order('created_at', { ascending: false });
+                    let query = supabase.from('orders').select('*').order('created_at', { ascending: false }).order('id', { ascending: false });
                     if (filterStatus && filterStatus !== 'الكل') {
                         query = query.eq('status', filterStatus);
                     } else {
-                        query = query.limit(DISPLAY_LIMIT);
+                        query = query.limit(100);
                     }
                     if (filterPage && filterPage !== 'الكل') query = query.eq('page', filterPage);
                     if (!loadAllHistory) {
@@ -957,6 +958,12 @@
                         .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'orders' }, (payload) => {
                             const updated = payload.new;
                             const old = payload.old;
+                            
+                            const override = overridesRef.current[updated.id];
+                            if (override && Date.now() - override.timestamp < 5000) {
+                                updated.status = override.status;
+                            }
+
                             setOrders(prev => prev.map(x => x.id === updated.id ? updated : x));
                             ordersRef.current = ordersRef.current.map(x => x.id === updated.id ? updated : x);
                             if (updated.status === 'الشحن' && old.status !== 'الشحن' && updated.user_id !== user.id && (isSuperAdmin || isPageManager)) {
@@ -1962,6 +1969,13 @@
                 setOrders(prev => prev.map(o => o.id === id ? { ...o, status: newStatus } : o));
                 ordersRef.current = ordersRef.current.map(o => o.id === id ? { ...o, status: newStatus } : o);
                 if(viewOrder && viewOrder.id === id) setViewOrder({...viewOrder, status: newStatus});
+
+                overridesRef.current[id] = { status: newStatus, timestamp: Date.now() };
+                Object.keys(overridesRef.current).forEach(key => {
+                    if (Date.now() - overridesRef.current[key].timestamp > 5000) {
+                        delete overridesRef.current[key];
+                    }
+                });
                 try {
                     const { error } = await supabase.from('orders').update({ status: newStatus }).eq('id', id);
                     if(error) throw error;
