@@ -584,7 +584,7 @@
                 } catch(e) { 
                     console.warn('Real stats RPC failed (SQL not added yet), falling back to fast counters...', e);
                     // في حال لم يقم العميل بإضافة الـ SQL بعد، يتم الحساب المبدئي السريع والسليم بدون إطالة 
-                    const processingStatuses = ['جاري التحضير','مراجعة','تاجيل','الشحن','استبدال','اعادة ارسال'];
+                    const processingStatuses = ['جاري التحضير','مراجعة','تاجيل'];
                     const [totalRes, processingRes] = await Promise.all([
                         supabase.from('orders').select('id', { count: 'exact', head: true }),
                         supabase.from('orders').select('id', { count: 'exact', head: true }).in('status', processingStatuses),
@@ -2410,7 +2410,7 @@
                                 <button onClick={handleInstallClick} className="sidebar-nav-item text-green-400 hover:text-green-300 w-full"><IconDownload size={18} /> <span>تثبيت التطبيق 📱</span></button>
                             </div>
                             <div className="pt-3 pb-1 text-center">
-                                <span className="text-[10px] text-slate-600 font-bold tracking-widest">v5.55</span>
+                                <span className="text-[10px] text-slate-600 font-bold tracking-widest">v5.56</span>
                             </div>
                         </nav>
                     </aside>
