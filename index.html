@@ -835,8 +835,12 @@
                 setIsSearchingDb(true);
                 try {
                     // البحث يشمل كل قاعدة البيانات بدون حد (مش بس آخر 3000)
+                    let orQuery = `customer.ilike.%${searchText}%,phone.ilike.%${searchText}%,"trackingNumber".ilike.%${searchText}%,item.ilike.%${searchText}%`;
+                    if (!isNaN(searchText) && String(searchText).trim() !== '') {
+                        orQuery += `,id.eq.${searchText}`;
+                    }
                     const { data, error } = await supabase.from('orders').select('*')
-                        .or(`customer.ilike.%${searchText}%,phone.ilike.%${searchText}%,id.ilike.%${searchText}%,"trackingNumber".ilike.%${searchText}%,item.ilike.%${searchText}%`)
+                        .or(orQuery)
                         .order('created_at', { ascending: false })
                         .limit(500);
                     if (error) throw error;
