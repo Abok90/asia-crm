@@ -602,26 +602,21 @@
             const fetchPageDbStats = async () => {
                 if (!user) return;
                 try {
-                    const memoryLimit = new Date();
-                    memoryLimit.setDate(memoryLimit.getDate() - 180); // 180 يوم
-                    const memoryLimitIso = memoryLimit.toISOString();
-
-                    let all = [];
-                    const batchSize = 1000;
-                    let from = 0;
-                    while (from < 5000) { // سقف أمان 5000 لحماية متصفح المستخدمين
-                        const { data } = await supabase.from('orders')
-                            .select('page,status,date,created_at,productPrice,shippingPrice')
-                            .gte('created_at', memoryLimitIso)
-                            .order('created_at', { ascending: false })
-                            .range(from, from + batchSize - 1);
-                        if (!data || data.length === 0) break;
-                        all = all.concat(data.map(o => ({ ...o, date: normalizeDate(o.date) || (o.created_at ? o.created_at.split('T')[0] : '') })));
-                        if (data.length < batchSize) break;
-                        from += batchSize;
+                    const { data, error } = await supabase.rpc('get_recent_orders_stats', { memory_days: 180 });
+                    if (data && !error) {
+                        const all = data.map(o => ({ ...o, date: normalizeDate(o.date) || (o.created_at ? o.created_at.split('T')[0] : '') }));
+                        setPageDbStats(all);
+                    } else {
+                        throw error || new Error('RPC Failed');
                     }
-                    setPageDbStats(all);
-                } catch(e) { console.error('fetchPageDbStats:', e); }
+                } catch(e) { 
+                    console.error('fetchPageDbStats RPC fallback:', e);
+                    // Fallback السريع جداً في حالة عدم إضافة العميل لكود SQL حتى يعمل النظام بدون تجمد
+                    const { data } = await supabase.from('orders')
+                        .select('page,status,date,created_at,productPrice,shippingPrice')
+                        .order('created_at', { ascending: false }).limit(500);
+                    if (data) setPageDbStats(data.map(o => ({ ...o, date: normalizeDate(o.date) || (o.created_at ? o.created_at.split('T')[0] : '') })));
+                }
             };
 
             const normalizeDate = (dateStr) => {
@@ -2415,7 +2410,7 @@
                                 <button onClick={handleInstallClick} className="sidebar-nav-item text-green-400 hover:text-green-300 w-full"><IconDownload size={18} /> <span>تثبيت التطبيق 📱</span></button>
                             </div>
                             <div className="pt-3 pb-1 text-center">
-                                <span className="text-[10px] text-slate-600 font-bold tracking-widest">v5.54</span>
+                                <span className="text-[10px] text-slate-600 font-bold tracking-widest">v5.55</span>
                             </div>
                         </nav>
                     </aside>
