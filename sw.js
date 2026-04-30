@@ -1,4 +1,4 @@
-const CACHE_NAME = 'asia-crm-v1';
+const CACHE_NAME = 'asia-crm-v5.58';
 const ASSETS = [
   './',
   './index.html',

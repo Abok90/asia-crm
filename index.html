@@ -433,7 +433,7 @@
             const [searchResults, setSearchResults] = useState([]); 
             const [isSearchingDb, setIsSearchingDb] = useState(false); 
             const [showDuplicatesOnly, setShowDuplicatesOnly] = useState(false);
-            const [loadAllHistory, setLoadAllHistory] = useState(false);
+            const [loadAllHistory, setLoadAllHistory] = useState(true);
 
             const [logSearchQuery, setLogSearchQuery] = useState('');
             const [logFilterUser, setLogFilterUser] = useState('الكل');
@@ -582,20 +582,40 @@
                         delivered: data[0].delivered_orders || 0,
                         revenue: data[0].total_revenue || 0
                     });
-                } catch(e) { 
-                    console.warn('Real stats RPC failed (SQL not added yet), falling back to fast counters...', e);
-                    // في حال لم يقم العميل بإضافة الـ SQL بعد، يتم الحساب المبدئي السريع والسليم بدون إطالة 
-                    const processingStatuses = ['جاري التحضير','مراجعة','تاجيل'];
-                    const [totalRes, processingRes] = await Promise.all([
-                        supabase.from('orders').select('id', { count: 'exact', head: true }),
-                        supabase.from('orders').select('id', { count: 'exact', head: true }).in('status', processingStatuses),
-                    ]);
-                    setRealStats({
-                        total: totalRes.count ?? null,
-                        processing: processingRes.count ?? null,
-                        delivered: null, // يتطلب SQL للسرعة
-                        revenue: null    // يتطلب SQL للسرعة
-                    });
+                } catch(e) {
+                    console.warn('Real stats RPC failed, falling back to direct Supabase counts...', e);
+                    try {
+                        const processingStatuses = ['جاري التحضير','مراجعة','تاجيل'];
+                        const [totalRes, processingRes, deliveredRes] = await Promise.all([
+                            supabase.from('orders').select('id', { count: 'exact', head: true }),
+                            supabase.from('orders').select('id', { count: 'exact', head: true }).in('status', processingStatuses),
+                            supabase.from('orders').select('id', { count: 'exact', head: true }).eq('status', 'تم'),
+                        ]);
+                        // اجلب إيرادات الطلبات المُسلَّمة على دفعات لتجاوز حد 1000 صف الافتراضي
+                        let revenue = 0;
+                        const CHUNK = 1000;
+                        let from = 0;
+                        while (true) {
+                            const { data: batch, error: batchErr } = await supabase
+                                .from('orders')
+                                .select('productPrice,shippingPrice')
+                                .eq('status', 'تم')
+                                .range(from, from + CHUNK - 1);
+                            if (batchErr || !batch || batch.length === 0) break;
+                            revenue += batch.reduce((s, o) => s + (Number(o.productPrice)||0) + (Number(o.shippingPrice)||0), 0);
+                            if (batch.length < CHUNK) break;
+                            from += CHUNK;
+                            if (from > 200000) break; // safety guard
+                        }
+                        setRealStats({
+                            total: totalRes.count ?? 0,
+                            processing: processingRes.count ?? 0,
+                            delivered: deliveredRes.count ?? 0,
+                            revenue
+                        });
+                    } catch (fallbackErr) {
+                        console.error('fetchRealStats fallback failed:', fallbackErr);
+                    }
                 }
             };
 
@@ -641,33 +661,50 @@
 
             const fetchOrdersData = useCallback(async () => {
                 if (!user) return;
-                try {
-                    let query = supabase.from('orders').select('*', { count: 'exact' }).order('created_at', { ascending: false }).order('id', { ascending: false });
-                    if (filterStatus && filterStatus !== 'الكل') query = query.eq('status', filterStatus);
-                    if (filterPage && filterPage !== 'الكل') query = query.eq('page', filterPage);
-                    if (dateFrom) query = query.gte('date', dateFrom);
-                    if (dateTo) query = query.lte('date', dateTo);
-                    
+                const makeQuery = () => {
+                    let q = supabase.from('orders').select('*', { count: 'exact' }).order('created_at', { ascending: false }).order('id', { ascending: false });
+                    if (filterStatus && filterStatus !== 'الكل') q = q.eq('status', filterStatus);
+                    if (filterPage && filterPage !== 'الكل') q = q.eq('page', filterPage);
+                    if (dateFrom) q = q.gte('date', dateFrom);
+                    if (dateTo) q = q.lte('date', dateTo);
                     if (!loadAllHistory && !dateFrom && !dateTo) {
                         const since = new Date();
                         since.setDate(since.getDate() - HISTORY_DAYS);
-                        query = query.gte('created_at', since.toISOString());
+                        q = q.gte('created_at', since.toISOString());
                     }
-
+                    return q;
+                };
+                try {
                     if (ordersPerPage !== 'All') {
                         const start = (currentPage - 1) * ordersPerPage;
-                        query = query.range(start, start + ordersPerPage - 1);
+                        const { data, count, error } = await makeQuery().range(start, start + ordersPerPage - 1);
+                        if (error) throw error;
+                        const safeOrders = (data || []).map(o => ({ ...o, productPrice: Number(o.productPrice) || 0, shippingPrice: Number(o.shippingPrice) || 0, date: normalizeDate(o.date) || (o.created_at ? o.created_at.split('T')[0] : '') }));
+                        setTotalOrdersCount(count || 0);
+                        setOrders(safeOrders);
+                        ordersRef.current = safeOrders;
                     } else {
-                        query = query.limit(2000);
+                        // "All": page through Supabase in chunks to bypass the default 1000-row cap
+                        const CHUNK = 1000;
+                        let from = 0;
+                        let total = 0;
+                        let collected = [];
+                        while (true) {
+                            const { data, count, error } = await makeQuery().range(from, from + CHUNK - 1);
+                            if (error) throw error;
+                            if (typeof count === 'number') total = count;
+                            const batch = data || [];
+                            collected = collected.concat(batch);
+                            if (batch.length < CHUNK) break;
+                            from += CHUNK;
+                            if (collected.length >= total && total > 0) break;
+                            if (from > 100000) break; // safety guard
+                        }
+                        const safeOrders = collected.map(o => ({ ...o, productPrice: Number(o.productPrice) || 0, shippingPrice: Number(o.shippingPrice) || 0, date: normalizeDate(o.date) || (o.created_at ? o.created_at.split('T')[0] : '') }));
+                        setTotalOrdersCount(total || safeOrders.length);
+                        setOrders(safeOrders);
+                        ordersRef.current = safeOrders;
                     }
-
-                    const { data, count, error } = await query;
-                    if (error) throw error;
-                    const safeOrders = (data || []).map(o => ({ ...o, productPrice: Number(o.productPrice) || 0, shippingPrice: Number(o.shippingPrice) || 0, date: normalizeDate(o.date) || (o.created_at ? o.created_at.split('T')[0] : '') }));
-                    
-                    setTotalOrdersCount(count || 0);
-                    setOrders(safeOrders);
-                    ordersRef.current = safeOrders;
                 } catch (error) { notify('تعذر تحميل الأوردرات. تحقق من الاتصال وأعد المحاولة.'); }
             }, [user, loadAllHistory, filterStatus, filterPage, dateFrom, dateTo, currentPage, ordersPerPage]);
 
@@ -2431,7 +2468,7 @@
                                 <button onClick={handleInstallClick} className="sidebar-nav-item text-green-400 hover:text-green-300 w-full"><IconDownload size={18} /> <span>تثبيت التطبيق 📱</span></button>
                             </div>
                             <div className="pt-3 pb-1 text-center">
-                                <span className="text-[10px] text-slate-600 font-bold tracking-widest">v5.57</span>
+                                <span className="text-[10px] text-slate-600 font-bold tracking-widest">v5.58</span>
                             </div>
                         </nav>
                     </aside>
@@ -2705,11 +2742,11 @@
                                                 <input type="text" placeholder="بحث..." className="block w-full pl-2 pr-7 py-1.5 bg-white border border-slate-200 rounded-lg focus:ring-2 focus:ring-sky-500 outline-none text-xs font-semibold" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} />
                                             </div>
                                             {/* فلتر الحالة */}
-                                            <select className="px-2 py-1.5 bg-white border border-slate-200 rounded-lg focus:ring-2 focus:ring-sky-500 outline-none text-xs font-semibold" value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)}>
+                                            <select className="px-2 py-1.5 bg-white border border-slate-200 rounded-lg focus:ring-2 focus:ring-sky-500 outline-none text-xs font-semibold" value={filterStatus} onChange={(e) => { setFilterStatus(e.target.value); setCurrentPage(1); }}>
                                                 <option value="الكل">كل الحالات</option>{orderStatuses.map(s => <option key={s} value={s}>{s}</option>)}
                                             </select>
                                             {/* فلتر الصفحة */}
-                                            <select className={`px-2 py-1.5 bg-white border border-slate-200 rounded-lg focus:ring-2 focus:ring-sky-500 outline-none text-xs font-semibold ${userRole.role === 'agent' && availablePages.length === 1 ? 'opacity-60 cursor-not-allowed' : ''}`} value={filterPage} onChange={(e) => setFilterPage(e.target.value)} disabled={userRole.role === 'agent' && availablePages.length === 1}>
+                                            <select className={`px-2 py-1.5 bg-white border border-slate-200 rounded-lg focus:ring-2 focus:ring-sky-500 outline-none text-xs font-semibold ${userRole.role === 'agent' && availablePages.length === 1 ? 'opacity-60 cursor-not-allowed' : ''}`} value={filterPage} onChange={(e) => { setFilterPage(e.target.value); setCurrentPage(1); }} disabled={userRole.role === 'agent' && availablePages.length === 1}>
                                                 <option value="الكل">{isSuperAdmin ? 'كل الصفحات' : 'صفحاتك'}</option>{availablePages.map(p => <option key={p} value={p}>{p}</option>)}
                                             </select>
                                             {/* أزرار */}
@@ -2851,13 +2888,35 @@
 
                                         <div className="px-3 py-2 md:px-4 md:py-3 bg-slate-800 text-white text-[10px] md:text-sm font-bold shadow-inner flex flex-wrap justify-between items-center gap-2">
                                             <div className="flex items-center gap-2 md:gap-4 flex-wrap">
-                                                <span>نتائج الفلتر: {filteredOrders.length} طلب</span>
+                                                <span className="bg-sky-900/60 text-sky-200 px-2 py-0.5 rounded">إجمالي الطلبات: {totalOrdersCount.toLocaleString()}</span>
+                                                <span className="text-slate-300">المعروض: {filteredOrders.length}</span>
                                                 {selectedOrders.length > 0 && <span className="text-sky-300 bg-sky-900/50 px-2 py-0.5 rounded">محدد: {selectedOrders.length}</span>}
                                                 <button onClick={() => { setLoadAllHistory(v => !v); setCurrentPage(1); }} className={`text-[10px] px-2 py-0.5 rounded font-bold transition-colors ${loadAllHistory ? 'bg-amber-500/30 text-amber-300 hover:bg-amber-500/50' : 'bg-slate-600 text-slate-300 hover:bg-slate-500'}`}>
                                                     {loadAllHistory ? '📂 كل التاريخ' : `🕐 آخر ${HISTORY_DAYS} يوم`}
                                                 </button>
                                             </div>
-                                            <div className="flex items-center gap-2 md:gap-4 flex-wrap"><div className="flex items-center gap-1.5 md:gap-2"><label className="text-slate-300 text-[10px] md:text-xs">عرض:</label><select className="bg-slate-700 border border-slate-600 text-white rounded px-1 py-0.5 md:px-2 md:py-1 outline-none focus:ring-1 focus:ring-sky-400" value={ordersPerPage} onChange={(e) => { setOrdersPerPage(e.target.value === 'All' ? 'All' : Number(e.target.value)); setCurrentPage(1); }}><option value={50}>50</option><option value={100}>100</option><option value={500}>500</option><option value="All">الكل</option></select></div>{ordersPerPage !== 'All' && totalPages > 1 && (<div className="flex items-center gap-1 bg-slate-700 rounded-lg p-1"><button disabled={currentPage === 1} onClick={() => setCurrentPage(p => Math.max(1, p - 1))} className="px-2 py-1 md:px-3 md:py-1 bg-slate-600 hover:bg-slate-500 disabled:opacity-30 rounded text-[10px] md:text-xs transition-colors">السابق</button><span className="px-1 md:px-2 text-[10px] md:text-xs">صفحة {currentPage} من {totalPages}</span><button disabled={currentPage === totalPages} onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))} className="px-2 py-1 md:px-3 md:py-1 bg-slate-600 hover:bg-slate-500 disabled:opacity-30 rounded text-[10px] md:text-xs transition-colors">التالي</button></div>)}</div>
+                                            <div className="flex items-center gap-2 md:gap-4 flex-wrap">
+                                                <div className="flex items-center gap-1.5 md:gap-2">
+                                                    <label className="text-slate-300 text-[10px] md:text-xs">عرض:</label>
+                                                    <select className="bg-slate-700 border border-slate-600 text-white rounded px-1 py-0.5 md:px-2 md:py-1 outline-none focus:ring-1 focus:ring-sky-400" value={ordersPerPage} onChange={(e) => { setOrdersPerPage(e.target.value === 'All' ? 'All' : Number(e.target.value)); setCurrentPage(1); }}>
+                                                        <option value={25}>25</option>
+                                                        <option value={50}>50</option>
+                                                        <option value={100}>100</option>
+                                                        <option value={200}>200</option>
+                                                        <option value={500}>500</option>
+                                                        <option value="All">الكل</option>
+                                                    </select>
+                                                </div>
+                                                {ordersPerPage !== 'All' && totalPages > 1 && (
+                                                    <div className="flex items-center gap-1 bg-slate-700 rounded-lg p-1">
+                                                        <button disabled={currentPage === 1} onClick={() => setCurrentPage(1)} className="px-1.5 py-1 md:px-2 md:py-1 bg-slate-600 hover:bg-slate-500 disabled:opacity-30 rounded text-[10px] md:text-xs transition-colors" title="الأولى">«</button>
+                                                        <button disabled={currentPage === 1} onClick={() => setCurrentPage(p => Math.max(1, p - 1))} className="px-2 py-1 md:px-3 md:py-1 bg-slate-600 hover:bg-slate-500 disabled:opacity-30 rounded text-[10px] md:text-xs transition-colors">السابق</button>
+                                                        <span className="px-1 md:px-2 text-[10px] md:text-xs whitespace-nowrap">{currentPage} / {totalPages}</span>
+                                                        <button disabled={currentPage === totalPages} onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))} className="px-2 py-1 md:px-3 md:py-1 bg-slate-600 hover:bg-slate-500 disabled:opacity-30 rounded text-[10px] md:text-xs transition-colors">التالي</button>
+                                                        <button disabled={currentPage === totalPages} onClick={() => setCurrentPage(totalPages)} className="px-1.5 py-1 md:px-2 md:py-1 bg-slate-600 hover:bg-slate-500 disabled:opacity-30 rounded text-[10px] md:text-xs transition-colors" title="الأخيرة">»</button>
+                                                    </div>
+                                                )}
+                                            </div>
                                         </div>
                                     </div>
                             )}
