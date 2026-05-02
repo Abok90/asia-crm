@@ -412,11 +412,6 @@
                     if (filterPage && filterPage !== 'الكل') q = q.eq('page', filterPage);
                     if (dateFrom) q = q.gte('date', dateFrom);
                     if (dateTo) q = q.lte('date', dateTo);
-                    if (!loadAllHistory && !dateFrom && !dateTo) {
-                        const since = new Date();
-                        since.setDate(since.getDate() - HISTORY_DAYS);
-                        q = q.gte('created_at', since.toISOString());
-                    }
                     return q;
                 };
                 try {
@@ -451,7 +446,7 @@
                         ordersRef.current = safeOrders;
                     }
                 } catch (error) { notify('تعذر تحميل الأوردرات. تحقق من الاتصال وأعد المحاولة.'); }
-            }, [user, loadAllHistory, filterStatus, filterPage, dateFrom, dateTo, currentPage, ordersPerPage]);
+            }, [user, filterStatus, filterPage, dateFrom, dateTo, currentPage, ordersPerPage]);
 
             const fetchUsersList = async () => {
                 try {
@@ -2550,7 +2545,7 @@
                                                 <span className="text-slate-300">المعروض: {filteredOrders.length}</span>
                                                 {selectedOrders.length > 0 && <span className="text-sky-300 bg-sky-900/50 px-2 py-0.5 rounded">محدد: {selectedOrders.length}</span>}
                                                 <button onClick={() => { setLoadAllHistory(v => !v); setCurrentPage(1); }} className={`text-[10px] px-2 py-0.5 rounded font-bold transition-colors ${loadAllHistory ? 'bg-amber-500/30 text-amber-300 hover:bg-amber-500/50' : 'bg-slate-600 text-slate-300 hover:bg-slate-500'}`}>
-                                                    {loadAllHistory ? '📂 كل التاريخ' : `🕐 آخر ${HISTORY_DAYS} يوم`}
+                                                    📂 كل البيانات
                                                 </button>
                                             </div>
                                             <div className="flex items-center gap-2 md:gap-4 flex-wrap">
