@@ -183,3 +183,125 @@ body {
     font-weight: 800;
     white-space: nowrap;
 }
+
+/* ============================================
+   Phase 3 — Performance & Design Enhancements
+   ============================================ */
+
+/* --- Skeleton Loading --- */
+.skeleton {
+    background: linear-gradient(90deg, #e2e8f0 25%, #f1f5f9 50%, #e2e8f0 75%);
+    background-size: 200% 100%;
+    animation: shimmer 1.5s infinite ease-in-out;
+    border-radius: 8px;
+}
+@keyframes shimmer {
+    0% { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+}
+.skeleton-text { height: 14px; width: 70%; margin-bottom: 8px; }
+.skeleton-title { height: 22px; width: 45%; margin-bottom: 12px; }
+.skeleton-card { height: 100px; width: 100%; margin-bottom: 12px; }
+
+/* --- Glassmorphism Enhancement --- */
+.glass-panel-v2 {
+    background: rgba(255, 255, 255, 0.85);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid rgba(255, 255, 255, 0.5);
+    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+
+/* --- Smooth Page Transitions --- */
+.tab-content-enter {
+    animation: fadeSlideUp 0.35s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+@keyframes fadeSlideUp {
+    from { opacity: 0; transform: translateY(12px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+/* --- Micro-interactions --- */
+.hover-lift {
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+.hover-lift:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 25px rgba(0, 0, 0, 0.08);
+}
+.hover-scale {
+    transition: transform 0.15s ease;
+}
+.hover-scale:hover { transform: scale(1.03); }
+.hover-scale:active { transform: scale(0.97); }
+
+/* --- Stat Card Enhanced --- */
+.stat-card-accent {
+    border-top: 3px solid var(--primary);
+    transition: all 0.25s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.stat-card-glow:hover {
+    box-shadow: 0 8px 30px rgba(2, 132, 199, 0.15);
+    transform: translateY(-3px);
+}
+
+/* --- Toast Enhanced --- */
+@keyframes slideDown {
+    from { transform: translateY(-120%); opacity: 0; }
+    to { transform: translateY(0); opacity: 1; }
+}
+@keyframes slideUp {
+    from { transform: translateY(0); opacity: 1; }
+    to { transform: translateY(-120%); opacity: 0; }
+}
+.toast-enter { animation: slideDown 0.4s cubic-bezier(0.22, 1, 0.36, 1) forwards; }
+.toast-exit { animation: slideUp 0.3s ease-in forwards; }
+
+/* --- Pulse Dot (for live indicators) --- */
+.pulse-dot {
+    width: 8px; height: 8px;
+    background: #22c55e;
+    border-radius: 50%;
+    animation: pulse-live 2s infinite;
+}
+@keyframes pulse-live {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(34,197,94,0.5); }
+    50% { box-shadow: 0 0 0 6px rgba(34,197,94,0); }
+}
+
+/* --- Button Press Effect --- */
+.btn-press:active {
+    transform: scale(0.95);
+    transition: transform 0.1s ease;
+}
+
+/* --- Responsive Mobile Improvements --- */
+@media (max-width: 640px) {
+    :root { --fs: 12px; --row-pad: 6px; }
+    
+    .order-card { padding: 12px 14px 10px; border-radius: 14px; }
+    .glass-panel { border-radius: 14px; }
+    
+    /* Touch-friendly tap targets */
+    .sidebar-nav-item { padding: 13px 16px; min-height: 48px; }
+    .filter-bar button, .filter-bar select { min-height: 40px; }
+}
+
+/* --- Print Optimization --- */
+@media print {
+    .bottom-nav, .sidebar, .no-print { display: none !important; }
+    .glass-panel, .glass-panel-v2 { 
+        box-shadow: none !important; 
+        border: 1px solid #ddd !important;
+    }
+    body { background: white !important; }
+}
+
+/* --- Accessibility --- */
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        transition-duration: 0.01ms !important;
+    }
+}
+
