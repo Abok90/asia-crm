@@ -409,7 +409,12 @@
                 const makeQuery = () => {
                     let q = supabase.from('orders').select('*', { count: 'exact' }).order('created_at', { ascending: false }).order('id', { ascending: false });
                     if (filterStatus && filterStatus !== 'الكل') q = q.eq('status', filterStatus);
-                    if (filterPage && filterPage !== 'الكل') q = q.eq('page', filterPage);
+                    if (filterPage && filterPage !== 'الكل') {
+                        q = q.eq('page', filterPage);
+                    } else if (!isSuperAdmin && availablePages.length > 0) {
+                        // Non-admin users: filter at DB level to only get their assigned pages
+                        q = q.in('page', availablePages);
+                    }
                     if (dateFrom) q = q.gte('date', dateFrom);
                     if (dateTo) q = q.lte('date', dateTo);
                     return q;
@@ -446,7 +451,7 @@
                         ordersRef.current = safeOrders;
                     }
                 } catch (error) { notify('تعذر تحميل الأوردرات. تحقق من الاتصال وأعد المحاولة.'); }
-            }, [user, filterStatus, filterPage, dateFrom, dateTo, currentPage, ordersPerPage]);
+            }, [user, isSuperAdmin, availablePages, filterStatus, filterPage, dateFrom, dateTo, currentPage, ordersPerPage]);
 
             const fetchUsersList = async () => {
                 try {
@@ -2121,7 +2126,7 @@
                                 <button onClick={handleInstallClick} className="sidebar-nav-item text-green-400 hover:text-green-300 w-full"><IconDownload size={18} /> <span>تثبيت التطبيق 📱</span></button>
                             </div>
                             <div className="pt-3 pb-1 text-center">
-                                <span className="text-[10px] text-slate-600 font-bold tracking-widest">v5.58</span>
+                                <span className="text-[10px] text-slate-600 font-bold tracking-widest">v5.59</span>
                             </div>
                         </nav>
                     </aside>
