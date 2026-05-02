@@ -179,6 +179,8 @@
             const [historyMonthIdx, setHistoryMonthIdx] = useState(0);
             const [inventoryStock, setInventoryStock] = useState(() => { try { return JSON.parse(localStorage.getItem('crmInventoryStock') || '{}'); } catch { return {}; } });
             const updateInventoryStock = (productName, qty) => { setInventoryStock(prev => { const next = { ...prev, [productName]: qty === '' ? '' : qty }; localStorage.setItem('crmInventoryStock', JSON.stringify(next)); return next; }); };
+            const [inventoryOrders, setInventoryOrders] = useState([]);
+            const [inventoryLoading, setInventoryLoading] = useState(false);
             
             const [searchQuery, setSearchQuery] = useState('');
             const [filterStatus, setFilterStatus] = useState('الكل');
@@ -496,6 +498,37 @@
                     const { data } = await supabase.from('user_roles').select('user_id').in('role', SUPER_ADMIN_ROLES);
                     if (data) setAdminUserIds(new Set(data.map(r => r.user_id).filter(Boolean)));
                 } catch(e) { console.error('fetchAdminUserIds:', e); }
+            }, [user]);
+
+            // ===== جلب أوردرات الجرد (جاري التحضير + مراجعة) بدون حد pagination =====
+            const fetchInventoryOrders = useCallback(async () => {
+                if (!user) return;
+                setInventoryLoading(true);
+                try {
+                    const CHUNK = 1000;
+                    let from = 0;
+                    let collected = [];
+                    while (true) {
+                        const { data, error } = await supabase
+                            .from('orders')
+                            .select('*')
+                            .in('status', ['جاري التحضير', 'مراجعة'])
+                            .order('created_at', { ascending: false })
+                            .range(from, from + CHUNK - 1);
+                        if (error) throw error;
+                        const batch = data || [];
+                        collected = collected.concat(batch);
+                        if (batch.length < CHUNK) break;
+                        from += CHUNK;
+                        if (from > 50000) break; // safety
+                    }
+                    setInventoryOrders(collected);
+                } catch (err) {
+                    console.error('fetchInventoryOrders:', err);
+                    notify('تعذر تحميل بيانات الجرد');
+                } finally {
+                    setInventoryLoading(false);
+                }
             }, [user]);
 
             const fetchMonthlyEmployeeStats = useCallback(async () => {
@@ -826,6 +859,7 @@
             useEffect(() => { setCurrentPage(1); }, [searchQuery, filterStatus, filterPage, dateFrom, dateTo, showDuplicatesOnly]);
             useEffect(() => { setSelectedOrders([]); }, [filterStatus, filterPage, searchQuery, dateFrom, dateTo]);
             useEffect(() => { if (user) fetchOrdersData(); }, [fetchOrdersData]);
+            useEffect(() => { if (user && currentTab === 'inventory') fetchInventoryOrders(); }, [currentTab, fetchInventoryOrders]);
             useEffect(() => {
                 const delayDebounceFn = setTimeout(() => { if (searchQuery.length > 2) searchDatabase(searchQuery); else setSearchResults([]); }, 800); 
                 return () => clearTimeout(delayDebounceFn);
@@ -2921,9 +2955,10 @@
                             )}
 
                             {currentTab === 'inventory' && (isSuperAdmin || isPageManager) && (() => {
-                                const prepOrders = orders.filter(o => o.status === 'جاري التحضير' || o.status === 'مراجعة');
-                                const prepCount = orders.filter(o => o.status === 'جاري التحضير').length;
-                                const reviewCount = orders.filter(o => o.status === 'مراجعة').length;
+                                if (inventoryLoading) return <div className="flex items-center justify-center py-20"><div className="text-center"><div className="animate-spin w-10 h-10 border-4 border-sky-500 border-t-transparent rounded-full mx-auto mb-4"></div><p className="text-slate-500 font-bold">جاري تحميل بيانات الجرد...</p></div></div>;
+                                const prepOrders = inventoryOrders;
+                                const prepCount = inventoryOrders.filter(o => o.status === 'جاري التحضير').length;
+                                const reviewCount = inventoryOrders.filter(o => o.status === 'مراجعة').length;
                                 const today = new Date().toLocaleDateString('ar-EG', {weekday:'long', year:'numeric', month:'long', day:'numeric'});
                                 // تجميع المنتجات — كل سطر في حقل item يُعتبر منتج منفصل
                                 const productMap = {};
@@ -2963,6 +2998,7 @@
                                                 <p className="text-teal-200 text-sm font-bold mt-1">المنتجات المطلوبة لأوردرات "جاري التحضير" و"مراجعة" — {today}</p>
                                             </div>
                                             <div className="flex items-center gap-3">
+                                                <button onClick={fetchInventoryOrders} className="bg-white/10 hover:bg-white/20 backdrop-blur rounded-xl p-2.5 text-white transition" title="تحديث بيانات الجرد"><IconRefresh size={18}/></button>
                                                 <div className="bg-white/10 backdrop-blur rounded-xl px-4 py-2.5 text-center">
                                                     <div className="font-black text-2xl">{prepOrders.length}</div>
                                                     <div className="text-[10px] text-teal-200 font-bold">إجمالي الأوردرات</div>
