@@ -133,10 +133,66 @@ async function login(username, password) {
     };
 }
 
-// جلب صفحة الشحنات وتحليل الجدول
+
+// جلب صفحة واحدة من الشحنات
+async function fetchShipmentsPage(sessionCookies, html) {
+    // تحقق إن الصفحة مش login page
+    if (html.includes('Txt_Emp_User_Login') && html.includes('Txt_Emp_Pass')) {
+        return { success: false, error: 'Session expired', shipments: [], html };
+    }
+    const shipments = parseShipmentsTable(html);
+    return { success: true, shipments, html };
+}
+
+// استخراج أرقام الصفحات المتاحة من الـ HTML
+function getAvailablePages(html) {
+    const pages = new Set();
+    // البحث عن __doPostBack(..., 'Page$N')
+    const pageRegex = /__doPostBack\([^)]*'Page\$(\d+)'/g;
+    let match;
+    while ((match = pageRegex.exec(html)) !== null) {
+        pages.add(parseInt(match[1]));
+    }
+    return Array.from(pages).sort((a, b) => a - b);
+}
+
+// جلب صفحة معينة عبر PostBack
+async function fetchPageByPostBack(sessionCookies, pageNum, previousHtml) {
+    const url = `${BASE_URL}/clientorders`;
+    const viewState = extractHiddenField(previousHtml, '__VIEWSTATE');
+    const viewStateGen = extractHiddenField(previousHtml, '__VIEWSTATEGENERATOR');
+    const eventValidation = extractHiddenField(previousHtml, '__EVENTVALIDATION');
+    
+    const formData = new URLSearchParams();
+    formData.append('__EVENTTARGET', 'ctl00$ArMainContent$UcClientOrders$GrdViewDtls');
+    formData.append('__EVENTARGUMENT', `Page$${pageNum}`);
+    formData.append('__VIEWSTATE', viewState);
+    if (viewStateGen) formData.append('__VIEWSTATEGENERATOR', viewStateGen);
+    if (eventValidation) formData.append('__EVENTVALIDATION', eventValidation);
+    
+    const res = await fetch(url, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Accept': 'text/html,application/xhtml+xml',
+            'Accept-Language': 'ar,en;q=0.9',
+            'Cookie': sessionCookies,
+            'Referer': url,
+            'Origin': BASE_URL,
+        },
+        redirect: 'follow',
+        body: formData.toString(),
+    });
+    
+    return await res.text();
+}
+
+// جلب كل الشحنات من جميع الصفحات
 async function fetchShipments(sessionCookies) {
     const url = `${BASE_URL}/clientorders`;
     
+    // الصفحة الأولى — GET
     const res = await fetch(url, {
         method: 'GET',
         headers: {
@@ -149,17 +205,56 @@ async function fetchShipments(sessionCookies) {
         redirect: 'follow',
     });
     
-    const html = await res.text();
+    let currentHtml = await res.text();
     
     // تحقق إن الصفحة مش login page
-    if (html.includes('Txt_Emp_User_Login') && html.includes('Txt_Emp_Pass')) {
+    if (currentHtml.includes('Txt_Emp_User_Login') && currentHtml.includes('Txt_Emp_Pass')) {
         return { success: false, error: 'Session expired - need re-login', shipments: [] };
     }
     
-    // تحليل الجدول
-    const shipments = parseShipmentsTable(html);
+    // الصفحة الأولى
+    let allShipments = parseShipmentsTable(currentHtml);
+    const seenTracking = new Set(allShipments.map(s => s.trackingNumber));
     
-    return { success: true, shipments, totalFound: shipments.length };
+    // اكتشاف الصفحات المتاحة والتنقل بينها
+    let maxPages = 50; // حد أقصى للأمان
+    let pagesFetched = 1;
+    
+    while (pagesFetched < maxPages) {
+        const availablePages = getAvailablePages(currentHtml);
+        
+        // البحث عن أول صفحة أكبر من الحالية
+        const nextPage = availablePages.find(p => p > pagesFetched);
+        if (!nextPage) break; // مفيش صفحات أكتر
+        
+        try {
+            const nextHtml = await fetchPageByPostBack(sessionCookies, nextPage, currentHtml);
+            const pageShipments = parseShipmentsTable(nextHtml);
+            
+            // لو مرجعش شحنات جديدة → وقف
+            if (pageShipments.length === 0) break;
+            
+            let newCount = 0;
+            for (const s of pageShipments) {
+                if (!seenTracking.has(s.trackingNumber)) {
+                    allShipments.push(s);
+                    seenTracking.add(s.trackingNumber);
+                    newCount++;
+                }
+            }
+            
+            // لو كلهم مكررين → وقف
+            if (newCount === 0) break;
+            
+            currentHtml = nextHtml;
+            pagesFetched = nextPage;
+        } catch (err) {
+            console.error(`Error fetching page ${nextPage}:`, err.message);
+            break;
+        }
+    }
+    
+    return { success: true, shipments: allShipments, totalFound: allShipments.length, pagesFetched };
 }
 
 // تحليل HTML الجدول واستخراج بيانات الشحنات
