@@ -181,6 +181,15 @@
             const updateInventoryStock = (productName, qty) => { setInventoryStock(prev => { const next = { ...prev, [productName]: qty === '' ? '' : qty }; localStorage.setItem('crmInventoryStock', JSON.stringify(next)); return next; }); };
             const [inventoryOrders, setInventoryOrders] = useState([]);
             const [inventoryLoading, setInventoryLoading] = useState(false);
+
+            // === حالات الشحن TwoWay Express ===
+            const [shippingData, setShippingData] = useState({}); // { ASIA: [...], Ukiyo: [...] }
+            const [shippingStatusMap, setShippingStatusMap] = useState({}); // { trackingNumber: { status, merchantCode, ... } }
+            const [shippingLoading, setShippingLoading] = useState(false);
+            const [shippingSyncTime, setShippingSyncTime] = useState(null);
+            const [shippingPage, setShippingPage] = useState('ASIA');
+            const [shippingSearch, setShippingSearch] = useState('');
+            const [shippingFilter, setShippingFilter] = useState('الكل');
             
             const [searchQuery, setSearchQuery] = useState('');
             const [filterStatus, setFilterStatus] = useState('الكل');
@@ -518,6 +527,114 @@
                     setInventoryLoading(false);
                 }
             }, [user]);
+
+            // ===== جلب بيانات الشحن من TwoWay Express =====
+            const fetchShippingData = useCallback(async (account) => {
+                if (!user) return [];
+                try {
+                    const res = await fetch('/api/shipping-proxy', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ account: account || 'ASIA', action: 'getAll' }),
+                    });
+                    if (!res.ok) throw new Error('فشل الاتصال بشركة الشحن');
+                    const data = await res.json();
+                    return data.shipments || [];
+                } catch (err) {
+                    console.error('fetchShippingData error:', err);
+                    return [];
+                }
+            }, [user]);
+
+            const syncAllShipping = useCallback(async () => {
+                if (!user || shippingLoading) return;
+                setShippingLoading(true);
+                try {
+                    const [asiaShipments, ukiyoShipments] = await Promise.all([
+                        fetchShippingData('ASIA'),
+                        fetchShippingData('Ukiyo'),
+                    ]);
+                    setShippingData({ ASIA: asiaShipments, Ukiyo: ukiyoShipments });
+                    // بناء خريطة سريعة بالبوليصة وكود التاجر
+                    const statusMap = {};
+                    const processShipments = (shipments, page) => {
+                        shipments.forEach(s => {
+                            if (s.trackingNumber) {
+                                statusMap[s.trackingNumber] = { ...s, page };
+                            }
+                            if (s.merchantCode) {
+                                statusMap['mc_' + s.merchantCode] = { ...s, page };
+                            }
+                        });
+                    };
+                    processShipments(asiaShipments, 'ASIA');
+                    processShipments(ukiyoShipments, 'Ukiyo');
+                    setShippingStatusMap(statusMap);
+                    setShippingSyncTime(new Date());
+                    // حفظ في Supabase لو الجدول موجود
+                    try {
+                        const allShipments = [
+                            ...asiaShipments.map(s => ({ ...s, page: 'ASIA' })),
+                            ...ukiyoShipments.map(s => ({ ...s, page: 'Ukiyo' })),
+                        ];
+                        for (const s of allShipments) {
+                            if (!s.trackingNumber) continue;
+                            await supabase.from('shipping_status').upsert({
+                                tracking_number: s.trackingNumber,
+                                order_id: s.merchantCode || '',
+                                shipping_status: s.status || 'غير محدد',
+                                driver_name: s.driver || '',
+                                page: s.page,
+                                last_synced_at: new Date().toISOString(),
+                            }, { onConflict: 'tracking_number' }).then(() => {}).catch(() => {});
+                        }
+                    } catch (dbErr) {
+                        console.warn('Shipping DB sync skipped:', dbErr.message);
+                    }
+                    notify('تم تحديث بيانات الشحن بنجاح ✅', 'success');
+                } catch (err) {
+                    console.error('syncAllShipping error:', err);
+                    notify('فشل تحديث بيانات الشحن: ' + err.message);
+                } finally {
+                    setShippingLoading(false);
+                }
+            }, [user, shippingLoading, fetchShippingData]);
+
+            // دالة للحصول على حالة شحن أوردر معين
+            const getShippingStatus = useCallback((order) => {
+                if (!order) return null;
+                // بحث بالبوليصة
+                if (order.trackingNumber && shippingStatusMap[order.trackingNumber]) {
+                    return shippingStatusMap[order.trackingNumber];
+                }
+                // بحث بكود التاجر
+                if (order.id && shippingStatusMap['mc_' + order.id]) {
+                    return shippingStatusMap['mc_' + order.id];
+                }
+                return null;
+            }, [shippingStatusMap]);
+
+            // ألوان حالات الشحن
+            const getShippingStatusColor = (status) => {
+                if (!status) return 'bg-slate-100 text-slate-500 border-slate-200';
+                if (status.includes('تم التسليم') || status.includes('تسليم')) return 'bg-green-100 text-green-700 border-green-300';
+                if (status.includes('في الشحن') || status.includes('الشحن')) return 'bg-orange-100 text-orange-700 border-orange-300';
+                if (status.includes('مرتجع')) return 'bg-rose-100 text-rose-700 border-rose-300';
+                if (status.includes('ملغي') || status.includes('ملغى')) return 'bg-red-100 text-red-700 border-red-300';
+                if (status.includes('مؤجل')) return 'bg-yellow-100 text-yellow-700 border-yellow-300';
+                if (status.includes('انتظار') || status.includes('مخزن')) return 'bg-blue-100 text-blue-700 border-blue-300';
+                return 'bg-slate-100 text-slate-600 border-slate-200';
+            };
+
+            // تحديث تلقائي كل 15 دقيقة
+            useEffect(() => {
+                if (!user || !userRole?.is_approved || !(isSuperAdmin || isPageManager)) return;
+                // تحميل أولي
+                const initialTimer = setTimeout(() => syncAllShipping(), 3000);
+                // تحديث دوري
+                const interval = setInterval(() => syncAllShipping(), 15 * 60 * 1000);
+                return () => { clearTimeout(initialTimer); clearInterval(interval); };
+            }, [user, userRole?.is_approved, isSuperAdmin, isPageManager]);
 
             const fetchMonthlyEmployeeStats = useCallback(async () => {
                 if (!user) return;
@@ -2115,6 +2232,7 @@
                             {isSuperAdmin && <button onClick={() => {setCurrentTab('pages'); setIsSidebarOpen(false);}} className={`sidebar-nav-item ${currentTab === 'pages' ? 'active' : ''}`}><IconStore /> <span>إحصائيات الصفحات</span></button>}
                             {canAccessFinance && <button onClick={() => {setCurrentTab('finance'); setIsSidebarOpen(false);}} className={`sidebar-nav-item ${currentTab === 'finance' ? 'active' : ''}`}><IconCalc /> <span>الحسابات المالية</span></button>}
                             {isSuperAdmin && <button onClick={() => {setCurrentTab('products'); setIsSidebarOpen(false);}} className={`sidebar-nav-item ${currentTab === 'products' ? 'active' : ''}`}><IconStore /> <span>إدارة المنتجات</span></button>}
+                            {(isSuperAdmin || isPageManager) && <button onClick={() => {setCurrentTab('shipping'); setIsSidebarOpen(false);}} className={`sidebar-nav-item ${currentTab === 'shipping' ? 'active' : ''}`}><IconTruck /> <span>متابعة الشحن</span>{shippingSyncTime && <span className="text-[8px] text-green-400 mr-1">●</span>}</button>}
                             {(isSuperAdmin || isPageManager) && <button onClick={() => {setCurrentTab('inventory'); setIsSidebarOpen(false);}} className={`sidebar-nav-item ${currentTab === 'inventory' ? 'active' : ''}`}><svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2"/><rect x="9" y="3" width="6" height="4" rx="2"/><path d="M9 12h6"/><path d="M9 16h4"/></svg> <span>الجرد</span></button>}
                             {(isSuperAdmin || isPageManager) && (<>
                                 <p className="text-[10px] font-black text-slate-600 uppercase tracking-widest px-3 pt-4 pb-1">الإدارة</p>
@@ -2129,7 +2247,7 @@
                                 <button onClick={handleInstallClick} className="sidebar-nav-item text-green-400 hover:text-green-300 w-full"><IconDownload size={18} /> <span>تثبيت التطبيق 📱</span></button>
                             </div>
                             <div className="pt-3 pb-1 text-center">
-                                <span className="text-[10px] text-slate-600 font-bold tracking-widest">v5.60</span>
+                                <span className="text-[10px] text-slate-600 font-bold tracking-widest">v5.61</span>
                             </div>
                         </nav>
                     </aside>
@@ -2149,6 +2267,7 @@
                                         {currentTab === 'users' && 'إدارة الفريق'}
                                         {currentTab === 'logs' && 'سجل النشاطات'}
                                         {currentTab === 'products' && 'إدارة المنتجات'}
+                                        {currentTab === 'shipping' && 'متابعة الشحن — TwoWay Express'}
                                         {currentTab === 'inventory' && 'بيان الجرد اليومي'}
                                     </h1>
                                     <p className="text-[10px] text-slate-400 font-bold hidden md:block">{new Date().toLocaleDateString('ar-EG', {weekday:'long', year:'numeric', month:'long', day:'numeric'})}</p>
@@ -2471,6 +2590,7 @@
                                                             <span className="inline bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded text-[9px] font-black ml-1">{order.page}</span>{order.item}{Number(order.quantity) > 1 && <span className="inline bg-violet-100 text-violet-700 px-1.5 py-0.5 rounded text-[9px] font-black mr-1">×{order.quantity}</span>}
                                                         </div>
                                                         {order.trackingNumber && <div className="text-[10px] font-bold text-orange-600 flex items-center gap-1 mt-1"><IconTruck size={11}/>{order.trackingNumber}</div>}
+                                                        {(() => { const ss = getShippingStatus(order); return ss ? <div className="mt-1"><span className={`px-2 py-0.5 rounded text-[8px] font-black border ${getShippingStatusColor(ss.status)}`}>🚚 {ss.status || 'غير محدد'}</span></div> : null; })()}
                                                         <div className="flex items-center gap-2 mt-3 pt-2.5 border-t border-slate-100">
                                                             <div className="font-black text-base text-slate-800 leading-none">{Number(order.productPrice||0)+Number(order.shippingPrice||0)}<span className="text-[10px] text-slate-400 font-bold mr-0.5">ج.م</span></div>
                                                             <div className="flex-1"/>
@@ -2531,7 +2651,7 @@
                                                                 {agentCannotQuickEdit && <div className="text-[8px] mt-1 opacity-70 font-bold text-red-600">محمي</div>}
                                                             </td>
                                                             <td className="align-top"><div className="text-[9px] md:text-[10px] opacity-80">شحن: {order.shippingPrice || 0} ج</div><div className="font-black text-[11px] md:text-sm bg-white/60 inline-block px-1.5 py-0.5 md:px-2 md:py-1 mt-1 rounded shadow-sm border border-white/40">{Number(order.productPrice || 0) + Number(order.shippingPrice || 0)} ج</div></td>
-                                                            <td className="align-top"><div className="text-[9px] md:text-[11px] font-bold flex items-center gap-1 opacity-90 mb-1.5"><IconCalendar /> {order.date}</div>{order.trackingNumber ? (<div className="text-[9px] md:text-[11px] font-black flex items-center gap-1 bg-white/50 inline-flex px-1 py-0.5 rounded shadow-sm border border-white/40"><IconTruck /> {order.trackingNumber}</div>) : (<div className="text-[10px] font-medium opacity-60">-</div>)}</td>
+                                                            <td className="align-top"><div className="text-[9px] md:text-[11px] font-bold flex items-center gap-1 opacity-90 mb-1.5"><IconCalendar /> {order.date}</div>{order.trackingNumber ? (<div className="text-[9px] md:text-[11px] font-black flex items-center gap-1 bg-white/50 inline-flex px-1 py-0.5 rounded shadow-sm border border-white/40"><IconTruck /> {order.trackingNumber}</div>) : (<div className="text-[10px] font-medium opacity-60">-</div>)}{(() => { const ss = getShippingStatus(order); return ss ? <div className="mt-1"><span className={`px-1.5 py-0.5 rounded text-[8px] font-black border ${getShippingStatusColor(ss.status)}`}>🚚 {ss.status || '—'}</span></div> : null; })()}</td>
                                                             <td className="align-top">
                                                                 <div className="flex flex-row md:flex-col gap-1 md:gap-1.5 flex-wrap">
                                                                     <button onClick={() => openViewModal(order)} className="flex-1 flex items-center justify-center gap-1 text-[10px] md:text-[11px] font-bold bg-sky-600 hover:bg-sky-700 text-white border border-sky-700 py-1 md:py-1.5 px-1 md:px-2 rounded transition-colors shadow-sm"><IconEye /> <span className="hidden md:inline">عرض</span></button>
@@ -2640,6 +2760,142 @@
                                 </div>
                             )}
                             
+                            {/* ===== صفحة متابعة الشحن ===== */}
+                            {currentTab === 'shipping' && (isSuperAdmin || isPageManager) && (
+                                <div className="space-y-4 md:space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+                                    {/* Header + Sync Button */}
+                                    <div className="glass-panel p-4 md:p-5 rounded-2xl shadow-sm border border-white">
+                                        <div className="flex flex-wrap items-center justify-between gap-3">
+                                            <div className="flex items-center gap-3">
+                                                <div className="p-3 bg-orange-50 text-orange-600 rounded-2xl shadow-sm"><IconTruck size={24}/></div>
+                                                <div>
+                                                    <h2 className="text-lg font-black text-slate-800">متابعة الشحن — TwoWay Express</h2>
+                                                    <p className="text-xs text-slate-400 font-bold mt-1">
+                                                        {shippingSyncTime ? `آخر تحديث: ${shippingSyncTime.toLocaleTimeString('ar-EG')}` : 'لم يتم التحديث بعد'}
+                                                        {shippingSyncTime && <span className="text-green-500 mr-2">● متصل</span>}
+                                                    </p>
+                                                </div>
+                                            </div>
+                                            <button onClick={syncAllShipping} disabled={shippingLoading} className="flex items-center gap-2 bg-orange-600 hover:bg-orange-700 disabled:opacity-50 text-white px-5 py-2.5 rounded-xl font-bold text-sm transition-all shadow-md">
+                                                {shippingLoading ? <><svg className="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/></svg> جاري التحديث...</> : <><IconRefresh size={16}/> تحديث الآن</>}
+                                            </button>
+                                        </div>
+                                    </div>
+
+                                    {/* Page Tabs (ASIA / Ukiyo) */}
+                                    <div className="flex bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+                                        {availablePages.map(p => (
+                                            <button key={p} onClick={() => setShippingPage(p)} className={`flex-1 py-3 font-black text-sm transition-colors ${shippingPage === p ? (p === 'ASIA' ? 'bg-sky-50 text-sky-700 border-b-2 border-sky-600' : 'bg-orange-50 text-orange-700 border-b-2 border-orange-600') : 'text-slate-500 hover:bg-slate-50'}`}>
+                                                {p}
+                                                <span className="text-[10px] font-bold mr-1 bg-white/80 px-1.5 py-0.5 rounded border shadow-sm">
+                                                    {(shippingData[p] || []).length}
+                                                </span>
+                                            </button>
+                                        ))}
+                                    </div>
+
+                                    {/* Stats Cards */}
+                                    {(() => {
+                                        const pageShipments = shippingData[shippingPage] || [];
+                                        const delivered = pageShipments.filter(s => (s.status || '').includes('تسليم')).length;
+                                        const inShipping = pageShipments.filter(s => (s.status || '').includes('الشحن') && !(s.status || '').includes('تسليم')).length;
+                                        const returned = pageShipments.filter(s => (s.status || '').includes('مرتجع')).length;
+                                        const pending = pageShipments.filter(s => (s.status || '').includes('انتظار') || (s.status || '').includes('مخزن')).length;
+                                        return (
+                                            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                                                <div className="glass-panel p-3 md:p-4 rounded-2xl flex items-center gap-3" style={{borderTop:'3px solid #0ea5e9'}}>
+                                                    <div className="p-2 bg-sky-50 text-sky-500 rounded-xl"><IconCart size={18}/></div>
+                                                    <div><p className="text-[10px] text-slate-400 font-bold">إجمالي الشحنات</p><p className="text-xl font-black text-slate-800">{pageShipments.length}</p></div>
+                                                </div>
+                                                <div className="glass-panel p-3 md:p-4 rounded-2xl flex items-center gap-3" style={{borderTop:'3px solid #22c55e'}}>
+                                                    <div className="p-2 bg-green-50 text-green-500 rounded-xl"><IconCheck size={18}/></div>
+                                                    <div><p className="text-[10px] text-slate-400 font-bold">تم التسليم</p><p className="text-xl font-black text-green-600">{delivered}</p></div>
+                                                </div>
+                                                <div className="glass-panel p-3 md:p-4 rounded-2xl flex items-center gap-3" style={{borderTop:'3px solid #f97316'}}>
+                                                    <div className="p-2 bg-orange-50 text-orange-500 rounded-xl"><IconTruck size={18}/></div>
+                                                    <div><p className="text-[10px] text-slate-400 font-bold">في الشحن</p><p className="text-xl font-black text-orange-600">{inShipping}</p></div>
+                                                </div>
+                                                <div className="glass-panel p-3 md:p-4 rounded-2xl flex items-center gap-3" style={{borderTop:'3px solid #f43f5e'}}>
+                                                    <div className="p-2 bg-rose-50 text-rose-500 rounded-xl"><IconX size={18}/></div>
+                                                    <div><p className="text-[10px] text-slate-400 font-bold">مرتجع</p><p className="text-xl font-black text-rose-600">{returned}</p></div>
+                                                </div>
+                                            </div>
+                                        );
+                                    })()}
+
+                                    {/* Search + Filter */}
+                                    <div className="glass-panel p-3 rounded-xl shadow-sm border border-white">
+                                        <div className="flex flex-wrap items-center gap-2">
+                                            <div className="relative flex-1 min-w-[160px]">
+                                                <div className="absolute inset-y-0 right-0 pr-2 flex items-center pointer-events-none text-slate-400"><IconSearch size={13}/></div>
+                                                <input type="text" placeholder="بحث برقم البوليصة أو كود التاجر..." className="block w-full pl-2 pr-7 py-2 bg-white border border-slate-200 rounded-lg focus:ring-2 focus:ring-orange-500 outline-none text-xs font-semibold" value={shippingSearch} onChange={e => setShippingSearch(e.target.value)} />
+                                            </div>
+                                            <select className="px-2 py-2 bg-white border border-slate-200 rounded-lg text-xs font-semibold focus:ring-2 focus:ring-orange-500 outline-none" value={shippingFilter} onChange={e => setShippingFilter(e.target.value)}>
+                                                <option value="الكل">كل الحالات</option>
+                                                <option value="تسليم">تم التسليم</option>
+                                                <option value="الشحن">في الشحن</option>
+                                                <option value="مرتجع">مرتجع</option>
+                                                <option value="ملغ">ملغي</option>
+                                                <option value="مؤجل">مؤجل</option>
+                                                <option value="انتظار">قيد الانتظار</option>
+                                            </select>
+                                            {(shippingSearch || shippingFilter !== 'الكل') && <button onClick={() => { setShippingSearch(''); setShippingFilter('الكل'); }} className="px-2 py-2 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-lg font-bold text-xs">إلغاء</button>}
+                                        </div>
+                                    </div>
+
+                                    {/* Shipments Table */}
+                                    <div className="glass-panel rounded-2xl shadow-sm border border-white overflow-hidden">
+                                        {shippingLoading && !shippingData[shippingPage] ? (
+                                            <div className="py-20 text-center"><div className="w-10 h-10 border-4 border-orange-200 border-t-orange-600 rounded-full animate-spin mx-auto mb-3"></div><p className="text-slate-400 font-bold text-sm">جاري تحميل بيانات الشحن...</p></div>
+                                        ) : (() => {
+                                            const pageShipments = shippingData[shippingPage] || [];
+                                            let filtered = pageShipments;
+                                            if (shippingSearch) {
+                                                const q = shippingSearch.toLowerCase();
+                                                filtered = filtered.filter(s => (s.trackingNumber || '').includes(q) || (s.merchantCode || '').includes(q));
+                                            }
+                                            if (shippingFilter !== 'الكل') {
+                                                filtered = filtered.filter(s => (s.status || '').includes(shippingFilter));
+                                            }
+                                            if (filtered.length === 0) return <div className="py-16 text-center text-slate-400 font-bold text-sm">لا توجد شحنات مطابقة</div>;
+                                            return (
+                                                <div className="overflow-x-auto">
+                                                    <table className="w-full text-right whitespace-nowrap min-w-[600px]">
+                                                        <thead className="bg-slate-800 text-white text-xs">
+                                                            <tr>
+                                                                <th className="px-3 py-3 font-bold text-center w-12">#</th>
+                                                                <th className="px-3 py-3 font-bold">رقم البوليصة</th>
+                                                                <th className="px-3 py-3 font-bold">كود التاجر</th>
+                                                                <th className="px-3 py-3 font-bold">تاريخ الدخول</th>
+                                                                <th className="px-3 py-3 font-bold text-center">حالة الشحن</th>
+                                                                <th className="px-3 py-3 font-bold">المندوب</th>
+                                                            </tr>
+                                                        </thead>
+                                                        <tbody className="divide-y divide-slate-100">
+                                                            {filtered.slice(0, 200).map((s, i) => (
+                                                                <tr key={s.trackingNumber + '-' + i} className="hover:bg-orange-50/50 transition-colors">
+                                                                    <td className="px-3 py-2.5 text-center text-slate-400 font-bold text-xs">{i + 1}</td>
+                                                                    <td className="px-3 py-2.5 font-black text-sm text-slate-800">{s.trackingNumber}</td>
+                                                                    <td className="px-3 py-2.5 font-bold text-sm text-sky-700">{s.merchantCode}</td>
+                                                                    <td className="px-3 py-2.5 text-xs font-bold text-slate-500">{s.entryDate}</td>
+                                                                    <td className="px-3 py-2.5 text-center">
+                                                                        <span className={`px-2.5 py-1 rounded-lg text-[10px] font-black border ${getShippingStatusColor(s.status)}`}>
+                                                                            {s.status || 'غير محدد'}
+                                                                        </span>
+                                                                    </td>
+                                                                    <td className="px-3 py-2.5 text-xs font-bold text-slate-500">{s.driver || '-'}</td>
+                                                                </tr>
+                                                            ))}
+                                                        </tbody>
+                                                    </table>
+                                                    {filtered.length > 200 && <div className="py-2 text-center text-[10px] text-slate-400 font-bold">عرض أول 200 شحنة من {filtered.length}</div>}
+                                                </div>
+                                            );
+                                        })()}
+                                    </div>
+                                </div>
+                            )}
+
                             {currentTab === 'finance' && canAccessFinance && (
                                 <div className="space-y-4 md:space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
                                     <div className="grid grid-cols-1 md:grid-cols-3 gap-3 md:gap-6">
