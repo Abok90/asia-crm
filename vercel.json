@@ -1,0 +1,7 @@
+{
+  "functions": {
+    "api/shipping-proxy.js": {
+      "maxDuration": 60
+    }
+  }
+}

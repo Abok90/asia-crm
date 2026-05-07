@@ -1,6 +1,7 @@
 // ==========================================
 // Shipping Proxy — Vercel Serverless Function
 // يتواصل مع موقع TwoWay Express لجلب بيانات الشحنات
+// v2 — مع دعم كامل للـ Pagination
 // ==========================================
 
 /**
@@ -9,7 +10,11 @@
  * TWE_UKIYO_USERNAME, TWE_UKIYO_PASSWORD
  */
 
+// Vercel: رفع الحد الزمني لـ 60 ثانية
+module.exports.config = { maxDuration: 60 };
+
 const BASE_URL = 'https://www.twowayexpress.com';
+const GRID_ID = 'ctl00$ArMainContent$UcClientOrders$GrdViewDtls';
 
 // جلب صفحة تسجيل الدخول واستخراج ViewState و Cookies
 async function getLoginPage() {
@@ -23,12 +28,20 @@ async function getLoginPage() {
         redirect: 'manual',
     });
     const html = await res.text();
+    const cookies = collectCookies(res);
+    const viewState = extractHiddenField(html, '__VIEWSTATE');
+    const viewStateGen = extractHiddenField(html, '__VIEWSTATEGENERATOR');
+    const eventValidation = extractHiddenField(html, '__EVENTVALIDATION');
     
-    // جمع كل الـ cookies
+    return { cookies, viewState, viewStateGen, eventValidation, html };
+}
+
+// جمع cookies من response
+function collectCookies(res) {
     const cookies = [];
     try {
-        const setCookieHeaders = res.headers.getSetCookie?.() || [];
-        setCookieHeaders.forEach(c => cookies.push(c.split(';')[0].trim()));
+        const arr = res.headers.getSetCookie?.() || [];
+        arr.forEach(c => cookies.push(c.split(';')[0].trim()));
     } catch(e) {}
     if (cookies.length === 0) {
         const raw = res.headers.get('set-cookie') || '';
@@ -37,35 +50,40 @@ async function getLoginPage() {
             if (part.includes('=')) cookies.push(part);
         });
     }
-    
-    // استخراج ViewState و EventValidation
-    const viewState = extractHiddenField(html, '__VIEWSTATE');
-    const viewStateGen = extractHiddenField(html, '__VIEWSTATEGENERATOR');
-    const eventValidation = extractHiddenField(html, '__EVENTVALIDATION');
-    
-    return { cookies: cookies.filter(Boolean).join('; '), viewState, viewStateGen, eventValidation, html };
+    return cookies.filter(Boolean).join('; ');
+}
+
+// دمج cookies
+function mergeCookies(...cookieStrings) {
+    const map = {};
+    cookieStrings.forEach(str => {
+        (str || '').split('; ').filter(Boolean).forEach(c => {
+            const eq = c.indexOf('=');
+            if (eq > 0) map[c.substring(0, eq)] = c;
+        });
+    });
+    return Object.values(map).join('; ');
 }
 
 function extractHiddenField(html, fieldName) {
-    // محاولة 1: id="__VIEWSTATE" value="..."
+    // id="__VIEWSTATE" value="..."
     const r1 = new RegExp(`id="${fieldName}"[^>]*value="([^"]*)"`, 'i');
     const m1 = html.match(r1);
     if (m1) return m1[1];
-    // محاولة 2: name="__VIEWSTATE" value="..."
-    const r2 = new RegExp(`name="${fieldName}"[^>]*value="([^"]*)"`, 'i');
+    // value="..." id="__VIEWSTATE"
+    const r2 = new RegExp(`value="([^"]*)"[^>]*id="${fieldName}"`, 'i');
     const m2 = html.match(r2);
     if (m2) return m2[1];
-    // محاولة 3: value="..." id="__VIEWSTATE"
-    const r3 = new RegExp(`value="([^"]*)"[^>]*id="${fieldName}"`, 'i');
+    // name="__VIEWSTATE" value="..."
+    const r3 = new RegExp(`name="${fieldName}"[^>]*value="([^"]*)"`, 'i');
     const m3 = html.match(r3);
     return m3 ? m3[1] : '';
 }
 
-// تسجيل الدخول والحصول على session cookies
+// تسجيل الدخول
 async function login(username, password) {
     const loginPage = await getLoginPage();
     
-    // ASP.NET PostBack: __EVENTTARGET = LnkLogin
     const formData = new URLSearchParams();
     formData.append('__EVENTTARGET', 'LnkLogin');
     formData.append('__EVENTARGUMENT', '');
@@ -90,73 +108,54 @@ async function login(username, password) {
         body: formData.toString(),
     });
     
-    // جمع الـ cookies الجديدة
-    const newCookies = [];
-    try {
-        const setCookieHeaders = res.headers.getSetCookie?.() || [];
-        setCookieHeaders.forEach(c => newCookies.push(c.split(';')[0].trim()));
-    } catch(e) {}
-    if (newCookies.length === 0) {
-        const raw = res.headers.get('set-cookie') || '';
-        raw.split(',').forEach(c => {
-            const part = c.split(';')[0].trim();
-            if (part.includes('=')) newCookies.push(part);
-        });
-    }
-    
-    // دمج كل الـ cookies
-    const cookieMap = {};
-    [...loginPage.cookies.split('; '), ...newCookies].filter(Boolean).forEach(c => {
-        const eq = c.indexOf('=');
-        if (eq > 0) cookieMap[c.substring(0, eq)] = c;
-    });
-    const allCookieStr = Object.values(cookieMap).join('; ');
-    
-    // تحقق من نجاح اللوجين
+    const newCookies = collectCookies(res);
+    const allCookies = mergeCookies(loginPage.cookies, newCookies);
     const location = res.headers.get('location') || '';
     const status = res.status;
     
-    // إذا 302 أو redirect → نجاح
-    // إذا 200 → ممكن لسه في صفحة اللوجين (فشل) أو اتنقل لصفحة الهوم
-    const responseBody = status === 200 ? await res.text() : '';
-    const isStillOnLogin = responseBody.includes('Txt_Emp_User_Login') && responseBody.includes('Txt_Emp_Pass');
-    
-    const success = (status === 302 || status === 301) || 
-                    (location && (location.includes('client') || location.includes('home') || location.includes('Home'))) ||
-                    (status === 200 && !isStillOnLogin);
-    
-    return {
-        success,
-        cookies: allCookieStr,
-        redirectUrl: location,
-        status,
-    };
-}
-
-
-// جلب صفحة واحدة من الشحنات
-async function fetchShipmentsPage(sessionCookies, html) {
-    // تحقق إن الصفحة مش login page
-    if (html.includes('Txt_Emp_User_Login') && html.includes('Txt_Emp_Pass')) {
-        return { success: false, error: 'Session expired', shipments: [], html };
+    // تحقق النجاح
+    let success = false;
+    if (status === 302 || status === 301) {
+        success = true;
+    } else if (status === 200) {
+        const body = await res.text();
+        success = !body.includes('Txt_Emp_User_Login');
     }
-    const shipments = parseShipmentsTable(html);
-    return { success: true, shipments, html };
+    
+    return { success, cookies: allCookies, redirectUrl: location, status };
 }
 
-// استخراج أرقام الصفحات المتاحة من الـ HTML
+// =====================
+// استخراج أرقام الصفحات المتاحة
+// =====================
 function getAvailablePages(html) {
     const pages = new Set();
-    // البحث عن __doPostBack(..., 'Page$N')
-    const pageRegex = /__doPostBack\([^)]*'Page\$(\d+)'/g;
-    let match;
-    while ((match = pageRegex.exec(html)) !== null) {
-        pages.add(parseInt(match[1]));
+    // ASP.NET بيشفّر ' كـ &#39; في الـ HTML
+    // نبحث عن كل الأنماط الممكنة
+    // Pattern 1: Page$N مع quotes عادية
+    const r1 = /Page\$(\d+)/g;
+    let m;
+    while ((m = r1.exec(html)) !== null) {
+        pages.add(parseInt(m[1]));
     }
     return Array.from(pages).sort((a, b) => a - b);
 }
 
+// اكتشاف الصفحة الحالية (الرقم بدون رابط = الصفحة الحالية)
+function getCurrentPageNum(html) {
+    // الصفحة الحالية بتكون <span>N</span> مش <a>
+    // نبحث في الـ pager row
+    const pagerMatch = html.match(/<tr[^>]*>\s*<td[^>]*>\s*<table[^>]*>\s*<tr[^>]*>([\s\S]*?)<\/tr>\s*<\/table>/i);
+    if (pagerMatch) {
+        const spanMatch = pagerMatch[1].match(/<span>(\d+)<\/span>/);
+        if (spanMatch) return parseInt(spanMatch[1]);
+    }
+    return 1;
+}
+
+// =====================
 // جلب صفحة معينة عبر PostBack
+// =====================
 async function fetchPageByPostBack(sessionCookies, pageNum, previousHtml) {
     const url = `${BASE_URL}/clientorders`;
     const viewState = extractHiddenField(previousHtml, '__VIEWSTATE');
@@ -164,7 +163,7 @@ async function fetchPageByPostBack(sessionCookies, pageNum, previousHtml) {
     const eventValidation = extractHiddenField(previousHtml, '__EVENTVALIDATION');
     
     const formData = new URLSearchParams();
-    formData.append('__EVENTTARGET', 'ctl00$ArMainContent$UcClientOrders$GrdViewDtls');
+    formData.append('__EVENTTARGET', GRID_ID);
     formData.append('__EVENTARGUMENT', `Page$${pageNum}`);
     formData.append('__VIEWSTATE', viewState);
     if (viewStateGen) formData.append('__VIEWSTATEGENERATOR', viewStateGen);
@@ -188,96 +187,27 @@ async function fetchPageByPostBack(sessionCookies, pageNum, previousHtml) {
     return await res.text();
 }
 
-// جلب كل الشحنات من جميع الصفحات
-async function fetchShipments(sessionCookies) {
-    const url = `${BASE_URL}/clientorders`;
-    
-    // الصفحة الأولى — GET
-    const res = await fetch(url, {
-        method: 'GET',
-        headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Accept': 'text/html,application/xhtml+xml',
-            'Accept-Language': 'ar,en;q=0.9',
-            'Cookie': sessionCookies,
-            'Referer': `${BASE_URL}/clienthome`,
-        },
-        redirect: 'follow',
-    });
-    
-    let currentHtml = await res.text();
-    
-    // تحقق إن الصفحة مش login page
-    if (currentHtml.includes('Txt_Emp_User_Login') && currentHtml.includes('Txt_Emp_Pass')) {
-        return { success: false, error: 'Session expired - need re-login', shipments: [] };
-    }
-    
-    // الصفحة الأولى
-    let allShipments = parseShipmentsTable(currentHtml);
-    const seenTracking = new Set(allShipments.map(s => s.trackingNumber));
-    
-    // اكتشاف الصفحات المتاحة والتنقل بينها
-    let maxPages = 50; // حد أقصى للأمان
-    let pagesFetched = 1;
-    
-    while (pagesFetched < maxPages) {
-        const availablePages = getAvailablePages(currentHtml);
-        
-        // البحث عن أول صفحة أكبر من الحالية
-        const nextPage = availablePages.find(p => p > pagesFetched);
-        if (!nextPage) break; // مفيش صفحات أكتر
-        
-        try {
-            const nextHtml = await fetchPageByPostBack(sessionCookies, nextPage, currentHtml);
-            const pageShipments = parseShipmentsTable(nextHtml);
-            
-            // لو مرجعش شحنات جديدة → وقف
-            if (pageShipments.length === 0) break;
-            
-            let newCount = 0;
-            for (const s of pageShipments) {
-                if (!seenTracking.has(s.trackingNumber)) {
-                    allShipments.push(s);
-                    seenTracking.add(s.trackingNumber);
-                    newCount++;
-                }
-            }
-            
-            // لو كلهم مكررين → وقف
-            if (newCount === 0) break;
-            
-            currentHtml = nextHtml;
-            pagesFetched = nextPage;
-        } catch (err) {
-            console.error(`Error fetching page ${nextPage}:`, err.message);
-            break;
-        }
-    }
-    
-    return { success: true, shipments: allShipments, totalFound: allShipments.length, pagesFetched };
-}
-
-// تحليل HTML الجدول واستخراج بيانات الشحنات
+// =====================
+// تحليل جدول الشحنات
 // هيكل الجدول (17 عمود):
 // [0] م | [1] رقم البوليصة | [2] كود التاجر | [3] تاريخ الدخول | [4] شحنة استبدال
 // [5] مندوب التوصيل | [6] المستلم | [7] العنوان | [8] محتوى الشحنة | [9] ملاحظات
 // [10] شحن على | [11] الإجمالي | [12] قيمة الشحن | [13] المستحق للراسل | [14] حالة السداد
 // [15] حالة الشحنة | [16] خيارات
+// =====================
 function parseShipmentsTable(html) {
     const shipments = [];
     
-    // البحث عن الجدول بـ ID المحدد
     const tableMatch = html.match(/<table[^>]*id="ArMainContent_UcClientOrders_GrdViewDtls"[^>]*>([\s\S]*?)<\/table>/i);
     const tableHtml = tableMatch ? tableMatch[1] : html;
     
-    // استخراج كل الصفوف
     const rowRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
-    let rows = [];
     let match;
     while ((match = rowRegex.exec(tableHtml)) !== null) {
         const rowHtml = match[1];
-        // تجاهل صفوف الـ header (th)
         if (rowHtml.includes('<th')) continue;
+        // تجاهل صف الـ pager (فيه جدول داخلي)
+        if (rowHtml.includes('<table')) continue;
         
         const cells = [];
         const cellRe = /<td[^>]*>([\s\S]*?)<\/td>/gi;
@@ -295,81 +225,138 @@ function parseShipmentsTable(html) {
             cells.push(cellText);
         }
         if (cells.length >= 10) {
-            rows.push(cells);
-        }
-    }
-    
-    // معالجة كل صف
-    for (const cells of rows) {
-        const serialNum = cells[0] || '';
-        // تجاهل headers أو صفوف فارغة
-        if (serialNum === 'م' || serialNum === '#' || serialNum === '') continue;
-        
-        const trackingNumber = (cells[1] || '').trim();
-        const merchantCode = (cells[2] || '').trim();
-        const entryDate = (cells[3] || '').trim();
-        const isReplacement = (cells[4] || '').trim();
-        const driver = (cells[5] || '').trim();
-        const recipient = (cells[6] || '').trim();
-        const address = (cells[7] || '').trim();
-        const contents = (cells[8] || '').trim();
-        const notes = (cells[9] || '').trim();
-        const shippingOn = (cells[10] || '').trim();
-        const total = (cells[11] || '').trim();
-        const shippingCost = (cells[12] || '').trim();
-        const sellerDue = (cells[13] || '').trim();
-        const paymentStatus = (cells[14] || '').trim();
-        const shipmentStatus = (cells[15] || '').trim();
-        
-        // تحقق إن الـ tracking number رقمي
-        if (trackingNumber && /^\d+$/.test(trackingNumber.replace(/[\s,]/g, ''))) {
-            shipments.push({
-                trackingNumber,
-                merchantCode,
-                entryDate,
-                status: shipmentStatus || 'غير محدد',
-                driver,
-                recipient,
-                contents,
-                total,
-                shippingCost,
-                paymentStatus,
-            });
+            const trackingNumber = (cells[1] || '').trim();
+            const merchantCode = (cells[2] || '').trim();
+            
+            if (trackingNumber && /^\d+$/.test(trackingNumber.replace(/[\s,]/g, ''))) {
+                shipments.push({
+                    trackingNumber,
+                    merchantCode,
+                    entryDate: (cells[3] || '').trim(),
+                    status: (cells[15] || '').trim() || 'غير محدد',
+                    driver: (cells[5] || '').trim(),
+                    recipient: (cells[6] || '').trim(),
+                    total: (cells[11] || '').trim(),
+                });
+            }
         }
     }
     
     return shipments;
 }
 
-// جلب حالة شحنة واحدة بالبحث
-async function searchByTracking(sessionCookies, trackingNumber) {
-    const result = await fetchShipments(sessionCookies);
-    if (!result.success) return result;
+// =====================
+// جلب كل الشحنات من جميع الصفحات
+// =====================
+async function fetchAllShipments(sessionCookies) {
+    const url = `${BASE_URL}/clientorders`;
     
-    const found = result.shipments.filter(s => 
-        s.trackingNumber === trackingNumber || 
-        s.merchantCode === trackingNumber
-    );
+    // الصفحة الأولى
+    const res = await fetch(url, {
+        method: 'GET',
+        headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Accept': 'text/html,application/xhtml+xml',
+            'Accept-Language': 'ar,en;q=0.9',
+            'Cookie': sessionCookies,
+            'Referer': `${BASE_URL}/clienthome`,
+        },
+        redirect: 'follow',
+    });
     
-    return { success: true, shipments: found, totalFound: found.length };
+    let currentHtml = await res.text();
+    
+    if (currentHtml.includes('Txt_Emp_User_Login') && currentHtml.includes('Txt_Emp_Pass')) {
+        return { success: false, error: 'Session expired', shipments: [] };
+    }
+    
+    // الصفحة الأولى
+    let allShipments = parseShipmentsTable(currentHtml);
+    const seenTracking = new Set(allShipments.map(s => s.trackingNumber));
+    
+    // اكتشاف كل أرقام الصفحات من الصفحة الأولى
+    const allPageNums = getAvailablePages(currentHtml);
+    const maxPageNum = allPageNums.length > 0 ? Math.max(...allPageNums) : 1;
+    
+    // التنقل بين الصفحات: 2, 3, 4, ...
+    for (let pageNum = 2; pageNum <= maxPageNum; pageNum++) {
+        try {
+            const nextHtml = await fetchPageByPostBack(sessionCookies, pageNum, currentHtml);
+            
+            if (!nextHtml || nextHtml.includes('Txt_Emp_User_Login')) break;
+            
+            const pageShipments = parseShipmentsTable(nextHtml);
+            if (pageShipments.length === 0) break;
+            
+            let newCount = 0;
+            for (const s of pageShipments) {
+                if (!seenTracking.has(s.trackingNumber)) {
+                    allShipments.push(s);
+                    seenTracking.add(s.trackingNumber);
+                    newCount++;
+                }
+            }
+            
+            // لو كلهم مكررين → وقف
+            if (newCount === 0) break;
+            
+            // تحديث الـ HTML عشان الـ ViewState يكون محدّث
+            currentHtml = nextHtml;
+            
+            // تحديث maxPageNum لو ظهرت صفحات جديدة (مثلاً الـ "..." بيكشف صفحات أكتر)
+            const newPages = getAvailablePages(nextHtml);
+            const newMax = newPages.length > 0 ? Math.max(...newPages) : maxPageNum;
+            if (newMax > maxPageNum) {
+                // في صفحات أكتر مما كنا نعرف
+                // maxPageNum is const so we use a different approach
+            }
+        } catch (err) {
+            console.error(`Error fetching page ${pageNum}:`, err.message);
+            break;
+        }
+    }
+    
+    // لو في صفحات أكتر (الـ "..." كان بيشير لأكتر)
+    // نكمل لحد ما مفيش بيانات جديدة
+    let extraPage = maxPageNum + 1;
+    while (extraPage <= 100) {
+        try {
+            const extraHtml = await fetchPageByPostBack(sessionCookies, extraPage, currentHtml);
+            if (!extraHtml || extraHtml.includes('Txt_Emp_User_Login')) break;
+            
+            const pageShipments = parseShipmentsTable(extraHtml);
+            if (pageShipments.length === 0) break;
+            
+            let newCount = 0;
+            for (const s of pageShipments) {
+                if (!seenTracking.has(s.trackingNumber)) {
+                    allShipments.push(s);
+                    seenTracking.add(s.trackingNumber);
+                    newCount++;
+                }
+            }
+            if (newCount === 0) break;
+            
+            currentHtml = extraHtml;
+            extraPage++;
+        } catch (err) {
+            break;
+        }
+    }
+    
+    return { success: true, shipments: allShipments, totalFound: allShipments.length, pagesFetched: extraPage - 1 };
 }
 
 // ==========================================
 // Main Handler
 // ==========================================
 module.exports = async (req, res) => {
-    // CORS
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
     
-    if (req.method === 'OPTIONS') {
-        return res.status(200).end();
-    }
-    
-    if (req.method !== 'POST') {
-        return res.status(405).json({ error: 'Method not allowed' });
-    }
+    if (req.method === 'OPTIONS') return res.status(200).end();
+    if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
     
     try {
         const { account, action, trackingNumber } = req.body || {};
@@ -378,7 +365,6 @@ module.exports = async (req, res) => {
             return res.status(400).json({ error: 'Invalid account. Use ASIA or Ukiyo.' });
         }
         
-        // الحصول على بيانات الدخول من Environment Variables
         const username = account === 'ASIA' 
             ? (process.env.TWE_ASIA_USERNAME || 'اسيا')
             : (process.env.TWE_UKIYO_USERNAME || 'Ukiyo');
@@ -394,7 +380,6 @@ module.exports = async (req, res) => {
                 error: 'Login failed', 
                 details: `Could not login to TwoWay Express with account: ${account}`,
                 httpStatus: loginResult.status,
-                redirectUrl: loginResult.redirectUrl,
             });
         }
         
@@ -402,9 +387,15 @@ module.exports = async (req, res) => {
         let result;
         
         if (action === 'search' && trackingNumber) {
-            result = await searchByTracking(loginResult.cookies, trackingNumber);
+            result = await fetchAllShipments(loginResult.cookies);
+            if (result.success) {
+                const found = result.shipments.filter(s => 
+                    s.trackingNumber === trackingNumber || s.merchantCode === trackingNumber
+                );
+                result = { ...result, shipments: found, totalFound: found.length };
+            }
         } else {
-            result = await fetchShipments(loginResult.cookies);
+            result = await fetchAllShipments(loginResult.cookies);
         }
         
         return res.status(200).json({
@@ -412,14 +403,12 @@ module.exports = async (req, res) => {
             account,
             shipments: result.shipments || [],
             totalFound: result.totalFound || 0,
+            pagesFetched: result.pagesFetched || 1,
             syncedAt: new Date().toISOString(),
         });
         
     } catch (error) {
         console.error('Shipping proxy error:', error);
-        return res.status(500).json({ 
-            error: 'Internal server error', 
-            message: error.message,
-        });
+        return res.status(500).json({ error: 'Internal server error', message: error.message });
     }
 };
