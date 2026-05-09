@@ -50,7 +50,16 @@ const emptyBulkRow = { id: '', customer: '', address: '', item: '', trackingNumb
 // ==========================================
 // تهيئة Supabase Client
 // ==========================================
+// خيارات auth صريحة لضمان استمرارية الجلسة وتجديد التوكن تلقائياً
+// (يمنع تسجيل الخروج المفاجئ على اللاب توب عند فشل تجديد التوكن)
 let supabase = null;
 if (SUPABASE_URL.startsWith('http')) {
-    supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+    supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+        auth: {
+            persistSession: true,
+            autoRefreshToken: true,
+            detectSessionInUrl: true,
+            storage: window.localStorage
+        }
+    });
 }

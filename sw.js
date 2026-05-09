@@ -1,4 +1,4 @@
-const CACHE_NAME = 'asia-crm-v7';
+const CACHE_NAME = 'asia-crm-v8';
 const ASSETS = [
   './',
   './index.html',
@@ -50,9 +50,9 @@ self.addEventListener('fetch', (event) => {
 
   const url = event.request.url;
 
-  // Never cache API/Supabase requests — always go to network
+  // لا نتدخل أبداً في طلبات Supabase / Auth / API — نتركها للمتصفح مباشرة
+  // (يمنع أي تعارض مع تجديد التوكن وكوكيز الجلسة)
   if (!shouldCache(url)) {
-    event.respondWith(fetch(event.request));
     return;
   }
 
