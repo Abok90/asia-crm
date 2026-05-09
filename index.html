@@ -856,12 +856,29 @@
                 const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
                     if (!mounted) return;
                     if (event === 'SIGNED_OUT') {
-                        setUser(null); setUserRole(null); setOrders([]); setAuthLoading(false);
+                        // قبل ما نسجّل خروج، نتأكد إن مفيش session شغّالة فعلاً (يمنع
+                        // الخروج المفاجئ بسبب فشل عابر في تجديد التوكن)
+                        supabase.auth.getSession().then(({ data: { session: existing } }) => {
+                            if (!mounted) return;
+                            if (existing?.user) {
+                                setUser(existing.user);
+                                fetchUserRole(existing.user.id, existing.user.email);
+                            } else {
+                                setUser(null); setUserRole(null); setOrders([]); setAuthLoading(false);
+                            }
+                        }).catch(() => {
+                            if (!mounted) return;
+                            setUser(null); setUserRole(null); setOrders([]); setAuthLoading(false);
+                        });
                     } else if (event === 'SIGNED_IN' && session?.user) {
                         setUser(session.user);
                         fetchUserRole(session.user.id, session.user.email);
+                    } else if (event === 'TOKEN_REFRESHED' && session?.user) {
+                        // تجديد التوكن نجح — نحتفظ بالمستخدم مسجّل الدخول
+                        setUser(session.user);
+                    } else if (event === 'USER_UPDATED' && session?.user) {
+                        setUser(session.user);
                     }
-                    // TOKEN_REFRESHED / INITIAL_SESSION / USER_UPDATED → initSession handles them
                 });
                 return () => { mounted = false; subscription?.unsubscribe(); };
             }, []);
@@ -2247,7 +2264,7 @@
                                 <button onClick={handleInstallClick} className="sidebar-nav-item text-green-400 hover:text-green-300 w-full"><IconDownload size={18} /> <span>تثبيت التطبيق 📱</span></button>
                             </div>
                             <div className="pt-3 pb-1 text-center">
-                                <span className="text-[10px] text-slate-600 font-bold tracking-widest">v5.61</span>
+                                <span className="text-[10px] text-slate-600 font-bold tracking-widest">v5.62</span>
                             </div>
                         </nav>
                     </aside>
