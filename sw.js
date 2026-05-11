@@ -6,6 +6,8 @@ const ASSETS = [
   './src/styles/main.css',
   './src/config.js',
   './src/helpers.js',
+  './src/auth.js',
+  './src/data.js',
   './src/icons.jsx'
 ];
 

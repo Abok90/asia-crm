@@ -33,11 +33,6 @@
 
     <!-- SheetJS — تصدير Excel حقيقي (.xlsx) يعمل على كل الأجهزة -->
     <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
-    <!-- Vercel Speed Insights -->
-    <script type="module">
-        import { injectSpeedInsights } from './speed-insights.js';
-        injectSpeedInsights();
-    </script>
     
     <!-- الخطوط -->
     <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800;900&display=swap" rel="stylesheet">
@@ -49,6 +44,10 @@
     <script src="src/config.js"></script>
     <!-- الدوال المساعدة -->
     <script src="src/helpers.js"></script>
+    <!-- وحدة المصادقة -->
+    <script src="src/auth.js"></script>
+    <!-- وحدة جلب البيانات -->
+    <script src="src/data.js"></script>
 </head>
 <body class="text-slate-800 antialiased overflow-x-hidden">
     <div id="root"></div>
@@ -242,21 +241,10 @@
             const [resetPwModal, setResetPwModal] = useState({ open: false, email: '', userName: '' });
             const [publicUserNames, setPublicUserNames] = useState({});
 
-            const pages = ['ASIA', 'Ukiyo'];
-            const orderStatuses = ['جاري التحضير', 'تم', 'الشحن', 'مراجعة', 'استبدال', 'مرتجع', 'الغاء', 'تاجيل', 'اعادة ارسال', 'خارجي'];
-            
-            const EXPENSE_CATEGORIES = ['إعلانات ASIA', 'إعلانات Ukiyo', 'مرتبات', 'سلف', 'مستلزمات', 'انتقالات', 'موديل وبلوجر', 'اشتراكات', 'صيانة', 'اكراميات', 'مرافق', 'ايجار', 'مرتجعات', 'تعاملات قانونية', 'مصاريف شحن', 'حساب شخصي', 'أخرى'];
-            const INCOME_CATEGORIES = ['شحن عايده', 'شحن اوفر', 'شحن مكتب', 'أخرى'];
-            const DEPARTMENTS = ['أونلاين'];
+            // ← الثوابت (pages, orderStatuses, ROLE_NAMES, إلخ) مُعرَّفة في src/config.js
 
-            const ROLE_NAMES = { admin: 'مدير النظام', owner: 'صاحب البراندات', social_manager: 'مديرة السوشيال ميديا', media_buyer: 'مدير الميديا باير', page_manager: 'مدير البيدجات', agent: 'Operations' };
-            const SUPER_ADMIN_ROLES = ['admin', 'owner', 'social_manager', 'media_buyer'];
-            const FINANCE_ROLES = ['admin', 'owner'];
-            
-            const initialOrderState = { id: '', customer: '', address: '', phone: '', notes: '', page: pages[0], item: '', quantity: '1', productPrice: '', shippingPrice: '', trackingNumber: '', status: 'جاري التحضير', date: '' };
             const [newOrder, setNewOrder] = useState(initialOrderState);
 
-            const emptyBulkRow = { id: '', customer: '', address: '', item: '', trackingNumber: '', notes: '', phone: '', status: 'جاري التحضير', shippingPrice: '', productPrice: '', date: '' };
             const [bulkOrders, setBulkOrders] = useState(Array(5).fill({...emptyBulkRow}));
             const [bulkTargetPage, setBulkTargetPage] = useState(pages[0]);
 
@@ -492,8 +480,8 @@
             const fetchAdminUserIds = useCallback(async () => {
                 if (!user) return;
                 try {
-                    const { data } = await supabase.from('user_roles').select('user_id').in('role', SUPER_ADMIN_ROLES);
-                    if (data) setAdminUserIds(new Set(data.map(r => r.user_id).filter(Boolean)));
+                    const { data } = await supabase.from('user_roles').select('id').in('role', SUPER_ADMIN_ROLES);
+                    if (data) setAdminUserIds(new Set(data.map(r => r.id).filter(Boolean)));
                 } catch(e) { console.error('fetchAdminUserIds:', e); }
             }, [user]);
 
@@ -781,13 +769,32 @@
                 try {
                     const term = String(searchText).trim();
                     // بحث شامل: رقم الطلب، الاسم، الموبايل، البوليصة، العنوان، المنتج
-                    let orQuery = `id.ilike.%${term}%,customer.ilike.%${term}%,phone.ilike.%${term}%,"trackingNumber".ilike.%${term}%,address.ilike.%${term}%,item.ilike.%${term}%`;
-                    const { data, error } = await supabase.from('orders').select('*')
-                        .or(orQuery)
-                        .order('created_at', { ascending: false })
-                        .limit(500);
-                    if (error) throw error;
-                    setSearchResults(data || []);
+                    // بدون limit ثابت — نجيب كل النتائج عبر pagination
+                    const CHUNK = 1000;
+                    let from = 0;
+                    let collected = [];
+                    const orQuery = `id.ilike.%${term}%,customer.ilike.%${term}%,phone.ilike.%${term}%,"trackingNumber".ilike.%${term}%,address.ilike.%${term}%,item.ilike.%${term}%`;
+                    while (true) {
+                        const { data, error } = await supabase.from('orders').select('*')
+                            .or(orQuery)
+                            .order('created_at', { ascending: false })
+                            .range(from, from + CHUNK - 1);
+                        if (error) throw error;
+                        const batch = data || [];
+                        collected = collected.concat(batch);
+                        if (batch.length < CHUNK) break;
+                        from += CHUNK;
+                        if (from > 50000) break; // safety guard
+                    }
+                    // بحث بالـ ID الدقيق (exact match) لو المصطلح ممكن يكون ID
+                    if (collected.length === 0 || !collected.some(o => o.id === term)) {
+                        const { data: exactMatch } = await supabase.from('orders')
+                            .select('*').eq('id', term).maybeSingle();
+                        if (exactMatch && !collected.some(o => o.id === exactMatch.id)) {
+                            collected.unshift(exactMatch);
+                        }
+                    }
+                    setSearchResults(collected);
                 } catch (err) { notify('حدث خطأ أثناء البحث. حاول مرة أخرى.'); } finally { setIsSearchingDb(false); }
             };
 
@@ -849,7 +856,10 @@
                         } else {
                             setAuthLoading(false);
                         }
-                    } catch (err) { if (mounted) setAuthLoading(false); }
+                    } catch (err) {
+                        console.error('initSession error:', err);
+                        if (mounted) setAuthLoading(false);
+                    }
                 };
                 initSession();
 
@@ -878,10 +888,33 @@
                         setUser(session.user);
                     } else if (event === 'USER_UPDATED' && session?.user) {
                         setUser(session.user);
+                    } else if (event === 'INITIAL_SESSION' && session?.user) {
+                        setUser(session.user);
+                        fetchUserRole(session.user.id, session.user.email);
                     }
                 });
                 return () => { mounted = false; subscription?.unsubscribe(); };
             }, []);
+
+            // مراقب صحة الجلسة — يتحقق كل 5 دقائق ويجدد الـ token لو قارب على الانتهاء
+            useEffect(() => {
+                if (!user) return;
+                const checkSession = async () => {
+                    try {
+                        const { data: { session }, error } = await supabase.auth.getSession();
+                        if (error || !session) {
+                            console.warn('Session lost — attempting silent refresh...');
+                            const { data: refreshResult, error: refreshError } = await supabase.auth.refreshSession();
+                            if (refreshError || !refreshResult?.session) {
+                                console.error('Session refresh failed:', refreshError);
+                                notify('انتهت جلستك. يرجى تسجيل الدخول مرة أخرى.', 'warning');
+                            }
+                        }
+                    } catch (e) { console.error('Session check error:', e); }
+                };
+                const interval = setInterval(checkSession, 5 * 60 * 1000); // كل 5 دقائق
+                return () => clearInterval(interval);
+            }, [user]);
 
             useEffect(() => {
                 if (user && userRole && userRole.is_approved) {

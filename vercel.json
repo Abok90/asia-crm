@@ -1,7 +1,21 @@
 {
   "functions": {
-    "api/shipping-proxy.js": {
-      "maxDuration": 60
+    "api/shipping-proxy.js": { "maxDuration": 60 },
+    "api/shopify-action.js": { "maxDuration": 30 },
+    "api/shopify-webhook.js": { "maxDuration": 30 }
+  },
+  "headers": [
+    {
+      "source": "/index.html",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-cache, no-store, must-revalidate" }
+      ]
+    },
+    {
+      "source": "/api/(.*)",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-store" }
+      ]
     }
-  }
+  ]
 }
